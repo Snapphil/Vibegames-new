@@ -1,0 +1,55 @@
+{
+  "expo": {
+    "name": "VibeGames",
+    "slug": "vibegames",
+    "version": "1.0.0",
+    "orientation": "portrait",
+    "icon": "./assets/images/icon.png",
+    "userInterfaceStyle": "automatic",
+    "newArchEnabled": true,
+    "owner": "snapphilai",
+    "ios": {
+      "supportsTablet": true,
+      "bundleIdentifier": "com.universalapp.app",
+      "buildNumber": "1"
+    },
+    "android": {
+      "adaptiveIcon": {
+        "foregroundImage": "./assets/images/icon.png",
+        "backgroundColor": "#667eea"
+      },
+      "package": "com.universalapp.app",
+      "versionCode": 1,
+      "edgeToEdgeEnabled": true
+    },
+    "web": {
+      "bundler": "metro",
+      "output": "static",
+      "favicon": "./assets/images/favicon.png"
+    },
+    "plugins": [
+      "expo-router",
+      [
+        "expo-splash-screen",
+        {
+          "image": "./assets/images/splash-icon.png",
+          "imageWidth": 200,
+          "resizeMode": "contain",
+          "backgroundColor": "#ffffff"
+        }
+      ],
+      "expo-asset",
+      "expo-font"
+    ],
+    "experiments": {
+      "typedRoutes": true
+    },
+    "scheme": "vibegames",
+    "extra": {
+      "router": {},
+      "eas": {
+        "projectId": "819a8840-4afa-4523-b4ed-d6a87c116e33"
+      }
+    }
+  }
+}

@@ -1,0 +1,238 @@
+// ============================================================================
+// FIRESTORE SECURITY RULES - MINIMAL SCHEMA (Stage-1 MVP)
+// ============================================================================
+//
+// Rules for the minimal schema:
+// - users (top-level)
+// - games (kept as-is, no changes)
+// - game_stats (kept as-is, no changes)
+// - app_config (kept as-is, no changes)
+// - games/{gameId}/likes (subcollection)
+// - games/{gameId}/comments (subcollection)
+// - games/{gameId}/comments/{commentId}/likes (subcollection)
+//
+// Security Model:
+// - Public read access for games, comments, and stats
+// - Users can only modify their own profile and likes/comments
+// - Game creation allowed for authenticated users
+// - Admin-only access for app_config and game_stats
+// ============================================================================
+
+rules_version = '2';
+service cloud.firestore {
+  match /databases/{database}/documents {
+    
+    // ========================================================================
+    // USERS COLLECTION - User profiles (username-based document IDs)
+    // ========================================================================
+    match /users/{username} {
+      // Users can read any profile (public)
+      allow read: if true;
+      
+      // Users can only create/update their own profile
+      // Check if the uid field in the document matches the authenticated user's UID
+      allow create, update: if request.auth != null 
+        && request.resource.data.uid == request.auth.uid
+        && validateUserProfile();
+      
+      // Users cannot delete profiles
+      allow delete: if false;
+      
+      function validateUserProfile() {
+        let data = request.resource.data;
+        return data.keys().hasAll(['uid', 'displayName', 'bio', 'avatar', 'totals', 'updatedAt'])
+          && data.uid is string
+          && data.displayName is string
+          && data.displayName.size() <= 50
+          && data.bio is string  
+          && data.bio.size() <= 200
+          && data.avatar is string
+          && data.avatar.size() <= 10
+          && data.totals is map
+          && data.totals.keys().hasAll(['totalLikes', 'totalViews', 'totalGames'])
+          && data.totals.totalLikes is number
+          && data.totals.totalViews is number  
+          && data.totals.totalGames is number
+          && (!data.keys().hasAny(['likedGames']) || data.likedGames is list)
+          && (!data.keys().hasAny(['createdGames']) || data.createdGames is list);
+      }
+    }
+    
+    // ========================================================================
+    // GAMES COLLECTION - Game documents (kept as-is)
+    // ========================================================================
+    match /games/{gameId} {
+      // Anyone can read games (public feed)
+      allow read: if true;
+      
+      // Authenticated users can create games
+      allow create: if request.auth != null
+        && validateGameCreation();
+      
+      // Only game author can update their games
+      allow update: if request.auth != null
+        && (request.auth.uid == resource.data.author 
+            || isSystemUpdate());
+      
+      // Only game author can delete their games
+      allow delete: if request.auth != null
+        && request.auth.uid == resource.data.author;
+      
+      function validateGameCreation() {
+        let data = request.resource.data;
+        return data.keys().hasAll(['id', 'title', 'author', 'category', 'difficulty', 
+                                  'duration', 'likes', 'views', 'plays', 'isActive', 
+                                  'html', 'description', 'isPublic', 'contentType', 'commentCount'])
+          && data.id is string
+          && data.title is string
+          && data.title.size() <= 100
+          && data.author is string
+          && data.author == request.auth.uid
+          && data.category is string
+          && data.difficulty in ['easy', 'medium', 'hard']
+          && data.duration is number
+          && data.duration >= 0
+          && data.likes == 0
+          && data.views == 0
+          && data.plays == 0
+          && data.isActive == true
+          && data.html is string
+          && data.description is string
+          && data.description.size() <= 500
+          && data.isPublic == true
+          && data.contentType == 'html_game'
+          && data.commentCount == 0;
+      }
+      
+      function isSystemUpdate() {
+        // Allow system updates for view/play/like counts
+        let changedKeys = request.resource.data.diff(resource.data).changedKeys();
+        return changedKeys.hasOnly(['views', 'plays', 'likes', 'commentCount']);
+      }
+      
+      // ======================================================================
+      // LIKES SUBCOLLECTION - Game likes
+      // ======================================================================
+      match /likes/{userId} {
+        // Anyone can read likes (for like counts)
+        allow read: if true;
+        
+        // Users can only create/delete their own likes
+        allow create: if request.auth != null
+          && request.auth.uid == userId
+          && validateGameLike();
+        
+        allow delete: if request.auth != null
+          && request.auth.uid == userId;
+        
+        // No updates allowed on likes
+        allow update: if false;
+        
+        function validateGameLike() {
+          let data = request.resource.data;
+          return data.keys().hasAll(['userId', 'gameId', 'createdAt'])
+            && data.userId == request.auth.uid
+            && data.gameId == gameId
+            && data.createdAt == request.time;
+        }
+      }
+      
+      // ======================================================================
+      // COMMENTS SUBCOLLECTION - Game comments
+      // ======================================================================
+      match /comments/{commentId} {
+        // Anyone can read comments (public)
+        allow read: if true;
+        
+        // Authenticated users can create comments
+        allow create: if request.auth != null
+          && validateComment();
+        
+        // Only comment author can update their comments (for like count updates)
+        allow update: if request.auth != null
+          && (request.auth.uid == resource.data.userId
+              || isCommentSystemUpdate());
+        
+        // Only comment author can delete their comments
+        allow delete: if request.auth != null
+          && request.auth.uid == resource.data.userId;
+        
+        function validateComment() {
+          let data = request.resource.data;
+          return data.keys().hasAll(['id', 'userId', 'text', 'likes', 'createdAt'])
+            && data.id is string
+            && data.userId == request.auth.uid
+            && data.text is string
+            && data.text.size() > 0
+            && data.text.size() <= 500
+            && data.likes == 0
+            && data.createdAt == request.time;
+        }
+        
+        function isCommentSystemUpdate() {
+          // Allow system updates for like counts only
+          let changedKeys = request.resource.data.diff(resource.data).changedKeys();
+          return changedKeys.hasOnly(['likes']);
+        }
+        
+        // ====================================================================
+        // COMMENT LIKES SUBCOLLECTION - Comment likes
+        // ====================================================================
+        match /likes/{userId} {
+          // Anyone can read comment likes (for like counts)
+          allow read: if true;
+          
+          // Users can only create/delete their own comment likes
+          allow create: if request.auth != null
+            && request.auth.uid == userId
+            && validateCommentLike();
+          
+          allow delete: if request.auth != null
+            && request.auth.uid == userId;
+          
+          // No updates allowed on comment likes
+          allow update: if false;
+          
+          function validateCommentLike() {
+            let data = request.resource.data;
+            return data.keys().hasAll(['userId', 'gameId', 'commentId', 'createdAt'])
+              && data.userId == request.auth.uid
+              && data.gameId == gameId
+              && data.commentId == commentId
+              && data.createdAt == request.time;
+          }
+        }
+      }
+    }
+    
+    // ========================================================================
+    // GAME_STATS COLLECTION - Platform statistics (kept as-is)
+    // ========================================================================
+    match /game_stats/{document=**} {
+      // Anyone can read stats (public)
+      allow read: if true;
+      
+      // Only system/admin can write stats
+      allow write: if false; // System updates happen server-side
+    }
+    
+    // ========================================================================
+    // APP_CONFIG COLLECTION - App configuration (kept as-is)
+    // ========================================================================
+    match /app_config/{document=**} {
+      // Anyone can read config (public)
+      allow read: if true;
+      
+      // Only admin can write config
+      allow write: if false; // Admin-only updates
+    }
+    
+    // ========================================================================
+    // DENY ALL OTHER COLLECTIONS
+    // ========================================================================
+    // Explicitly deny access to any other collections not in minimal schema
+    match /{document=**} {
+      allow read, write: if false;
+    }
+  }
+}
