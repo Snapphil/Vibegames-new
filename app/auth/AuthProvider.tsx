@@ -1,10 +1,10 @@
 import React, { createContext, useContext, useEffect, useMemo, useState } from 'react';
 import { createUserWithEmailAndPassword, signInWithEmailAndPassword, onAuthStateChanged, signOut, User, sendPasswordResetEmail } from 'firebase/auth';
 import { auth } from '../services/firebase';
+import { Platform } from 'react-native';
 import { ensureUserDocument } from '../services/userRegistry';
 import { UserService } from '../services/UserService';
 import { SessionService } from '../services/SessionService';
-import { Platform } from 'react-native';
 
 type AuthContextValue = {
   user: User | null;
@@ -31,37 +31,61 @@ export function AuthProvider({
   // Initialize Firebase Auth state listener
 
   useEffect(() => {
-    const unsub = onAuthStateChanged(auth, async (u) => {
-      setUser(u);
-      
-      if (u) {
-        try {
-          // Initialize user session
-          await SessionService.initializeSession(u);
-          console.log('✅ User session initialized');
+    console.log('🔐 AuthProvider: Setting up Firebase auth state listener');
 
-          // Sync user profile when auth state changes (e.g., app restart with logged in user)
-          if (!initializing) {
-            const userService = UserService.getInstance();
-            await userService.syncProfileFromFirebase(u);
-            console.log('🔄 User profile synced on auth state change');
+    // Small delay to ensure Firebase is fully initialized
+    const initTimeout = setTimeout(() => {
+      const unsub = onAuthStateChanged(auth, async (u) => {
+        console.log('🔐 AuthProvider: Auth state changed:', {
+          hasUser: !!u,
+          userId: u?.uid,
+          email: u?.email,
+          isInitializing: initializing,
+          platform: Platform.OS
+        });
+
+        setUser(u);
+
+        if (u) {
+          try {
+            // Initialize user session
+            await SessionService.initializeSession(u);
+            console.log('✅ User session initialized');
+
+            // Sync user profile when auth state changes (e.g., app restart with logged in user)
+            if (!initializing) {
+              const userService = UserService.getInstance();
+              await userService.syncProfileFromFirebase(u);
+              console.log('🔄 User profile synced on auth state change');
+            }
+          } catch (error) {
+            console.error('Error setting up user session and profile:', error);
           }
-        } catch (error) {
-          console.error('Error setting up user session and profile:', error);
+        } else {
+          // End session when user logs out
+          try {
+            await SessionService.endSession();
+            console.log('✅ User session ended');
+          } catch (error) {
+            console.error('Error ending session:', error);
+          }
         }
-      } else {
-        // End session when user logs out
-        try {
-          await SessionService.endSession();
-          console.log('✅ User session ended');
-        } catch (error) {
-          console.error('Error ending session:', error);
+
+        if (initializing) {
+          console.log('🔐 AuthProvider: Finished initializing, setting initializing to false');
+          setInitializing(false);
         }
-      }
-      
-      if (initializing) setInitializing(false);
-    });
-    return unsub;
+      });
+
+      return () => {
+        console.log('🔐 AuthProvider: Cleaning up auth listener');
+        unsub();
+      };
+    }, 100); // Small delay to ensure Firebase is ready
+
+    return () => {
+      clearTimeout(initTimeout);
+    };
   }, [initializing]);
 
   const signInWithEmail = async (email: string, password: string) => {

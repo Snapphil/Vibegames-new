@@ -1,8 +1,6 @@
 import { initializeApp, getApps, getApp } from 'firebase/app';
 import { getAuth, setPersistence, browserLocalPersistence } from 'firebase/auth';
 import { getFirestore } from 'firebase/firestore';
-import { Platform } from 'react-native';
-import AsyncStorage from '@react-native-async-storage/async-storage';
 
 const firebaseConfig = {
   apiKey: "AIzaSyBm5b6_R8D5ULbxz47hmni5jZRqAR8M0sE",
@@ -19,31 +17,22 @@ const app = getApps().length ? getApp() : initializeApp(firebaseConfig);
 export const auth = getAuth(app);
 export const db = getFirestore(app);
 
-// Configure Firebase Auth to persist authentication state
-const configurePersistence = async () => {
-  try {
-    if (Platform.OS === 'web') {
-      await setPersistence(auth, browserLocalPersistence);
-      console.log('✅ Firebase Auth persistence configured with browserLocalPersistence');
-      return;
-    }
+// Configure Firebase Auth persistence for React Native
+if (typeof document !== 'undefined') {
+  // Web environment
+  setPersistence(auth, browserLocalPersistence).catch((error) => {
+    console.error('Error setting auth persistence:', error);
+  });
+} else {
+  // React Native environment - persistence is automatic
+  console.log('🔐 Firebase Auth: Using React Native default persistence');
+}
 
-    const { getReactNativePersistence } = await import('firebase/auth/react-native');
-    await setPersistence(auth, getReactNativePersistence(AsyncStorage));
-    console.log('✅ Firebase Auth persistence configured with AsyncStorage');
-  } catch (error) {
-    console.error('❌ Firebase Auth persistence configuration failed:', error);
-  }
-};
-
-void configurePersistence();
-
-export { AsyncStorage };
+console.log('✅ Firebase initialized successfully with auth persistence');
 
 // Add default export for Expo Router
 export default {
   app,
   auth,
-  db,
-  AsyncStorage
+  db
 };

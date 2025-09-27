@@ -14,7 +14,6 @@ import {
   ScrollView,
   Keyboard,
   Alert,
-  AppState,
   Easing,
 } from "react-native";
 import { CustomIcon } from "../../components/ui/CustomIcon";
@@ -22,340 +21,16 @@ import { WebView } from "react-native-webview";
 import { SafeAreaView, useSafeAreaInsets } from "react-native-safe-area-context";
 import { BlurView } from "expo-blur";
 import { LinearGradient } from "expo-linear-gradient";
-import { GenerationActions, useGeneration } from "./components/GenerationState";
 import { GameStorage } from "./GameStorage";
 import SimpleGameService from "../services/SimpleGameService";
 import AppConfigService from "../services/AppConfigService";
+import BackgroundGameGenerationService from "../services/BackgroundGameGenerationService";
+import * as Notifications from 'expo-notifications';
 import { useAuth } from "../auth/AuthProvider";
 
 const { height: SCREEN_H, width: SCREEN_W } = Dimensions.get("window");
 
-// Types
-interface GameVersion {
-  html: string;
-  prompt: string;
-  timestamp: number;
-  stage: 'simple' | 'checklist' | 'mvp' | 'mobile' | 'final';
-}
-
-interface GenerationSession {
-  initialPrompt: string;
-  versions: GameVersion[];
-  currentVersionIndex: number;
-}
-
-interface AgentStep {
-  name: string;
-  status: 'pending' | 'running' | 'complete' | 'error';
-  output?: string;
-  error?: string;
-}
-
-interface LintError {
-  message: string;
-  line: number;
-  snippet: string;
-}
-
-interface TokenUsage {
-  prompt: number;
-  completion: number;
-  total: number;
-}
-
-// HTML Linter (simplified version of Python linter)
-const VOID_TAGS = new Set(["area","base","br","col","embed","hr","img","input","link","meta","param","source","track","wbr","command","keygen","menuitem"]);
-
-function removeBlocks(html: string, tag: string): string {
-  const regex = new RegExp(`<${tag}\\b[\\s\\S]*?</${tag}\\s*>`, 'gi');
-  return html.replace(regex, "");
-}
-
-function stripComments(html: string): string {
-  return html.replace(/<!--[\s\S]*?-->/g, "");
-}
-
-function lintHtml(html: string): LintError[] {
-  const errors: LintError[] = [];
-  const lines = html.split('\n');
-  
-  // Remove code fences if present
-  const cleanHtml = html.replace(/^\s*```[a-zA-Z]*\s*|\s*```\s*$/gm, "");
-  const checkHtml = stripComments(cleanHtml);
-  const scrubbed = removeBlocks(removeBlocks(checkHtml, "script"), "style");
-
-  // Check for DOCTYPE
-  if (!checkHtml.toLowerCase().includes('<!doctype html')) {
-    errors.push({
-      message: "Missing <!DOCTYPE html> at top",
-      line: 1,
-      snippet: lines[0]?.trim() || ""
-    });
-  }
-
-  // Check for required tags
-  for (const tag of ['html', 'head', 'body']) {
-    const matches = (checkHtml.match(new RegExp(`<\\s*${tag}\\b`, 'gi')) || []).length;
-    if (matches === 0) {
-      errors.push({
-        message: `Missing <${tag}> tag`,
-        line: 1,
-        snippet: ""
-      });
-    } else if (matches > 1) {
-      errors.push({
-        message: `Multiple <${tag}> tags found (${matches})`,
-        line: 1,
-        snippet: ""
-      });
-    }
-  }
-
-  // Basic tag balance check
-  const tagMatches = scrubbed.matchAll(/<\s*(\/)?([a-zA-Z][a-zA-Z0-9\-]*)\b[^>]*?>/g);
-  const stack: string[] = [];
-  
-  for (const match of tagMatches) {
-    const [fullMatch, closing, tag] = match;
-    const tagLower = tag.toLowerCase();
-    
-    if (tagLower === 'doctype') continue;
-    
-    const isSelfClosed = fullMatch.trim().endsWith('/>');
-    
-    if (!closing) {
-      if (!VOID_TAGS.has(tagLower) && !isSelfClosed) {
-        stack.push(tagLower);
-      }
-    } else {
-      if (VOID_TAGS.has(tagLower)) {
-        errors.push({
-          message: `Unexpected closing tag </${tagLower}> for void element`,
-          line: 1,
-          snippet: ""
-        });
-        continue;
-      }
-      
-      if (stack.length === 0) {
-        errors.push({
-          message: `Unmatched closing tag </${tagLower}>`,
-          line: 1,
-          snippet: ""
-        });
-        continue;
-      }
-      
-      const lastTag = stack[stack.length - 1];
-      if (lastTag !== tagLower) {
-        errors.push({
-          message: `Mismatched closing tag </${tagLower}>; expected </${lastTag}>`,
-          line: 1,
-          snippet: ""
-        });
-      }
-      stack.pop();
-    }
-  }
-
-  // Check for unclosed tags
-  for (const unclosedTag of stack) {
-    errors.push({
-      message: `Unclosed <${unclosedTag}> tag`,
-      line: 1,
-      snippet: ""
-    });
-  }
-
-  return errors;
-}
-
-function formatErrorsForPrompt(errors: LintError[], maxItems: number = 8): string {
-  const formattedErrors = errors.slice(0, maxItems).map((error, index) => {
-    const snippet = error.snippet.slice(0, 260) + (error.snippet.length > 260 ? "..." : "");
-    return `${index + 1}. Line ${error.line}: ${error.message} | Snippet: ${snippet}`;
-  });
-  
-  if (errors.length > maxItems) {
-    formattedErrors.push(`... and ${errors.length - maxItems} more`);
-  }
-  
-  return formattedErrors.join('\n');
-}
-
-// Agent Functions (exact prompts from Python)
-async function agentSimpleCode(userTopic: string): Promise<{ html: string; tokenUsage: TokenUsage }> {
-  const systemPrompt = `You are SimpleCoderAgent. Write the simplest and shortest working HTML code for the given game idea.
-Output ONLY a complete, valid HTML5 document with inline <style> and <script>. No markdown, no prose.
-Make it playable and functional with minimal features.`;
-
-  const userPrompt = `write the simplest and shortest code for below prompt in html single code\n\n${userTopic}`;
-  
-  return await callGPTAPI(systemPrompt, userPrompt);
-}
-
-async function agentChecklist(htmlCode: string, userTopic: string): Promise<{ checklist: string; tokenUsage: TokenUsage }> {
-  const systemPrompt = `You are ChecklistAgent. Analyze the provided HTML code for the given game idea.
-Check for missing items that would make it a good working game.
-Create a simple checklist of improvements needed.
-Output ONLY the checklist in format:
-- [ ] Item 1
-- [ ] Item 2
-etc.
-Be concise and focus on essential game features.`;
-
-  const userPrompt = `Game idea: ${userTopic}\n\nHTML code:\n${htmlCode}\n\nCheck for missing items and create a simple checklist to achieve a good working game.`;
-  
-  const result = await callGPTAPI(systemPrompt, userPrompt);
-  return { checklist: result.html, tokenUsage: result.tokenUsage };
-}
-
-async function agentCode(checklist: string, priorHtml: string, lintFeedback?: string): Promise<{ html: string; tokenUsage: TokenUsage }> {
-  const systemPrompt = `You are CodingAgent. Implement the checklist items in the provided HTML code.
-
-Output:
-- Exactly one full, valid HTML5 document with inline <style> and <script>. Return ONLY the HTML. No markdown, no prose.
-- Modify the existing HTML to add the checklist features while preserving existing functionality.
-
-Rules:
-- Implement ALL checklist items marked with [ ] or [x]
-- Keep existing code working and add new features
-- Maintain <!doctype html> and single-file structure
-- No external <link> or <script> tags
-
-Visual Design:
-- High contrast colors (white #FFFFFF on black #000000)
-- Primary action: #7C4DFF
-- Success: #10B981, Danger: #EF4444
-- Large, readable text (minimum 16px)
-- Smooth animations with CSS transitions
-- Rounded corners for containers
-
-*Avoid such errors*
-Failed to load resource: "data:audio/wav;base64
-Do not include these libs or attempted audio`;
-
-  const userPrompt = lintFeedback 
-    ? `Fix the HTML SYNTAX issues listed without adding features. Return the FULL corrected HTML only.\nIssues:\n${lintFeedback}\n\nCurrent HTML:\n${priorHtml}`
-    : `Implement the checklist items in the existing HTML code.\nChecklist:\n${checklist}\nCurrent HTML:\n${priorHtml}`;
-
-  return await callGPTAPI(systemPrompt, userPrompt);
-}
-
-async function agentMobileOptimize(priorHtml: string, lintFeedback?: string, inspectionFeedback?: string): Promise<{ html: string; tokenUsage: TokenUsage }> {
-  const systemPrompt = `You are MobileOptimizerAgent. Transform the provided HTML5 game into a mobile-first, touch-friendly, single-file document.
-Rules:
-- Preserve ALL existing core logic (including WebGL/Three.js or other 3D code). Do not simplify or downgrade graphics.
-- Only adjust layout, viewport, and controls to make the game mobile-ready.
-- Remove excessive text from frontend visible, remove all the references to ASWD keys or arrow keys in code.
-- Add <meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover,user-scalable=no">.
-- Ensure canvas or container uses 100vw/100vh (or 100dvh) and respects env(safe-area-inset-*).
-- Controls: map touch events to the existing input system (swipe, drag, joystick, taps). Keep buttons only if already present.
-- UI: large tap targets (≥44px), high contrast colors, readable text (≥16px), smooth CSS transitions.
-- Do NOT remove or alter shaders, WebGL context, Three.js setup, or rendering loops.
-- Output must be a complete valid <!DOCTYPE html> file with inline CSS/JS. No markdown fences, no explanations.`;
-
-  let userPrompt: string;
-  if (inspectionFeedback) {
-    userPrompt = `Fix the FUNCTIONALITY issues identified in the final inspection while maintaining mobile optimization. Address all button connections, movement logic, game loops, and control issues mentioned. Return the FULL corrected HTML only.\nInspection Issues:\n${inspectionFeedback}\n\nCurrent HTML:\n${priorHtml}`;
-  } else if (lintFeedback) {
-    userPrompt = `Fix the HTML SYNTAX issues while keeping mobile optimization intact. Return the FULL corrected HTML only.\nIssues:\n${lintFeedback}\n\nCurrent HTML:\n${priorHtml}`;
-  } else {
-    userPrompt = `Rewrite the given HTML to be mobile-only optimized and touch-friendly, preserving MVP functionality. Output the full HTML only.\n\nHTML:\n${priorHtml}`;
-  }
-
-  return await callGPTAPI(systemPrompt, userPrompt);
-}
-
-async function agentFinalInspection(mobileHtml: string, userTopic: string): Promise<{ inspection: string; tokenUsage: TokenUsage }> {
-  const systemPrompt = `You are FinalInspectorAgent. Thoroughly analyze the mobile HTML game for functionality and connectivity issues.
-
-CRITICAL CHECKS TO PERFORM:
-- Button connections: restart button functionality, start/pause buttons, menu buttons
-- Movement controls: joystick/wasd/arrow key connections, touch controls, gesture handling
-- Game loops: main game loop execution, animation loops, physics updates
-- Event handlers: click/touch event listeners properly attached and functional
-- Game state management: score tracking, level progression, win/lose conditions
-- Collision detection: object interactions, boundary checking
-- Audio/visual feedback: sound effects, animations, visual state changes
-- Mobile optimization: viewport, touch targets, responsive design
-- Error handling: try-catch blocks, graceful failure handling
-- Variable scoping: proper variable declarations, no undefined references
-
-SPECIFIC ISSUES TO DETECT:
-- Non-functional restart button or reset mechanism
-- Broken movement controls or input handling
-- Incomplete game loops or update cycles
-- Missing event listeners or disconnected UI elements
-- Logic errors in scoring, collision, or game progression
-- Mobile-specific issues: touch events, viewport problems
-
-Output: 5-line summary maximum. State issues ONLY if found. End with DONE.
-Be specific about what's broken and why it won't work.`;
-
-  const userPrompt = `Game idea: ${userTopic}\n\nAnalyze this final mobile HTML game code for functionality issues:\n\n${mobileHtml}\n\nCheck all button connections, movement logic, game loops, and controls. Report any broken functionality in 5 lines maximum.`;
-  
-  const result = await callGPTAPI(systemPrompt, userPrompt);
-  return { inspection: result.html, tokenUsage: result.tokenUsage };
-}
-
-// API Call Function
-async function callGPTAPI(systemPrompt: string, userPrompt: string): Promise<{ html: string; tokenUsage: TokenUsage }> {
-  const appConfigService = AppConfigService.getInstance();
-  const config = await appConfigService.getConfig();
-  
-  const apiKey = config.api_key_gpt || 
-    (typeof process !== "undefined" &&
-      (process as any).env &&
-      (((process as any).env.EXPO_PUBLIC_OPENAI_API_KEY as string) || (process as any).env.OPENAI_API_KEY)) ||
-    "";
-
-  if (!apiKey) {
-    throw new Error("Missing OpenAI API key");
-  }
-
-  const response = await fetch('https://api.openai.com/v1/chat/completions', {
-    method: 'POST',
-    headers: {
-      'Content-Type': 'application/json',
-      'Authorization': `Bearer ${apiKey}`,
-    },
-    body: JSON.stringify({
-      model: config.model_name || "gpt-4",
-      messages: [
-        {
-          role: "developer",
-          content: [{ type: "text", text: systemPrompt }],
-        },
-        {
-          role: "user", 
-          content: [{ type: "text", text: userPrompt }],
-        },
-      ],
-      response_format: { type: 'text' },
-      verbosity: config.verbosity || "low",
-      reasoning_effort: config.reasoning_effort || "low",
-    }),
-  });
-
-  if (!response.ok) {
-    throw new Error(`OpenAI API error: HTTP ${response.status}`);
-  }
-
-  const data = await response.json();
-  const content = data.choices?.[0]?.message?.content || "";
-  
-  // Extract token usage
-  const tokenUsage: TokenUsage = {
-    prompt: data.usage?.prompt_tokens || 0,
-    completion: data.usage?.completion_tokens || 0,
-    total: data.usage?.total_tokens || 0,
-  };
-
-  return { html: content, tokenUsage };
-}
-
-// WebView Configuration
+// WebView configuration
 const getWebViewConfig = () => ({
   javaScriptEnabled: true,
   domStorageEnabled: true,
@@ -381,94 +56,25 @@ const getWebViewConfig = () => ({
   originWhitelist: ['*', 'data:*', 'blob:*'],
 });
 
-// WebView Error Monitoring
-const createWebViewMessageHandler = (onError?: (error: string) => void) => (event: any) => {
-  try {
-    const data = JSON.parse(event.nativeEvent.data);
-    console.log('WebView message:', data);
 
-    switch (data.type) {
-      case 'error':
-      case 'console.error':
-      case 'runtime-error':
-      case 'syntax-error':
-      case 'network-error':
-        console.error('WebView Error:', data.message, data);
-        if (onError) onError(`${data.type}: ${data.message}`);
-        break;
-      case 'game-ready':
-        console.log('Game Ready:', data.message);
-        break;
-      default:
-        console.log('Other WebView message:', data);
-    }
-  } catch (parseError) {
-    console.log('WebView message (non-JSON):', event.nativeEvent.data);
-  }
-};
-
-const getGameErrorMonitoringScript = () => `
-  const originalConsoleError = console.error;
-  console.error = function(...args) {
-    window.ReactNativeWebView && window.ReactNativeWebView.postMessage(JSON.stringify({
-      type: 'console.error',
-      message: args.join(' ')
-    }));
-    originalConsoleError.apply(console, args);
-  };
-  
-  window.onerror = function(message, source, lineno, colno, error) {
-    window.ReactNativeWebView && window.ReactNativeWebView.postMessage(JSON.stringify({
-      type: 'runtime-error',
-      message: message,
-      source: source,
-      line: lineno,
-      stack: error ? error.stack : 'No stack trace available'
-    }));
-    return false;
-  };
-  
-  window.addEventListener('unhandledrejection', function(event) {
-    window.ReactNativeWebView && window.ReactNativeWebView.postMessage(JSON.stringify({
-      type: 'runtime-error',
-      message: 'Unhandled Promise Rejection: ' + (event.reason ? event.reason.toString() : 'Unknown reason'),
-      stack: event.reason && event.reason.stack ? event.reason.stack : 'No stack trace available'
-    }));
-  });
-  
-  true;
-`;
-
-// Default Game
-function generateDefaultGame() {
-  return `<!DOCTYPE html>
-<html lang="en">
-<head>
-<meta charset="utf-8"/>
-<meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no, viewport-fit=cover"/>
-<title>Game Studio</title>
-<style>
-  * { margin: 0; padding: 0; box-sizing: border-box; }
-  html, body {
-    width: 100%; height: 100%; overflow: hidden; background: #000;
-    touch-action: none; font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
-  }
-  .container {
-    display: flex; flex-direction: column; align-items: center; justify-content: center;
-    height: 100%; color: white; text-align: center; padding: 20px;
-  }
-  h1 { font-size: 2rem; margin-bottom: 1rem; color: #7C3AED; }
-  p { font-size: 1.2rem; opacity: 0.8; line-height: 1.5; }
-</style>
-</head>
-<body>
-  <div class="container">
-    <h1>Game Studio</h1>
-    <p>Describe your game idea below to get started</p>
-  </div>
-</body>
-</html>`;
+// Token tracking
+interface TokenUsage {
+  prompt_tokens: number;
+  completion_tokens: number;
+  total_tokens: number;
 }
+
+// Game generation state
+type GenerationStage = 
+  | 'simple_code' 
+  | 'checklist' 
+  | 'mvp_code' 
+  | 'linting_generic' 
+  | 'mobile_optimize' 
+  | 'linting_mobile'
+  | 'final_inspection'
+  | 'fixing_inspection'
+  | 'complete';
 
 interface GameCreatorProps {
   onGamePublished?: (game: any) => void;
@@ -476,310 +82,351 @@ interface GameCreatorProps {
 
 export default function GameCreator({ onGamePublished }: GameCreatorProps = {}) {
   const { user } = useAuth();
-  const { state: genState } = useGeneration();
   const insets = useSafeAreaInsets();
+  const backgroundGenerationService = BackgroundGameGenerationService.getInstance();
 
   // Core state
   const [input, setInput] = useState("");
-  const [generationSession, setGenerationSession] = useState<GenerationSession | null>(null);
   const [isGenerating, setIsGenerating] = useState(false);
-  const [currentStep, setCurrentStep] = useState(0);
-  const [agentSteps, setAgentSteps] = useState<AgentStep[]>([]);
-  const [cumulativeTokens, setCumulativeTokens] = useState<TokenUsage>({ prompt: 0, completion: 0, total: 0 });
+  const [gameHtml, setGameHtml] = useState<string>("");
+  const [checklist, setChecklist] = useState<string>("");
+  const [currentStage, setCurrentStage] = useState<GenerationStage>('complete');
+  const [stageMessage, setStageMessage] = useState<string>("");
+  const [currentGenerationId, setCurrentGenerationId] = useState<string | null>(null);
+  
+  // Token tracking
+  const [cumulativeTokens, setCumulativeTokens] = useState<TokenUsage>({
+    prompt_tokens: 0,
+    completion_tokens: 0,
+    total_tokens: 0,
+  });
 
   // Publishing state
   const [showPublishModal, setShowPublishModal] = useState(false);
   const [gameName, setGameName] = useState("");
   const [gameDescription, setGameDescription] = useState("");
   const [isPublishing, setIsPublishing] = useState(false);
+  const [publishSuccess, setPublishSuccess] = useState(false);
+
+  // Keyboard state
+  const [keyboardVisible, setKeyboardVisible] = useState(false);
 
   // Animations
-  const progressAnimation = useRef(new Animated.Value(0)).current;
+  const successAnimation = useRef(new Animated.Value(0)).current;
   const scaleAnimation = useRef(new Animated.Value(0)).current;
+  const stageProgressAnimation = useRef(new Animated.Value(0)).current;
 
-  // Initialize agent steps
-  const initializeAgentSteps = () => {
-    return [
-      { name: "Simple Coder", status: 'pending' as const },
-      { name: "Checklist", status: 'pending' as const },
-      { name: "MVP Builder", status: 'pending' as const },
-      { name: "Mobile Optimizer", status: 'pending' as const },
-      { name: "Final Inspector", status: 'pending' as const },
-    ];
+  // Load saved state
+  useEffect(() => {
+    const loadSavedState = async () => {
+      try {
+        const savedState = await GameStorage.getCreateTabState();
+        if (savedState) {
+          setInput(savedState.input || "");
+          setGameHtml(savedState.gameHtml || "");
+          setGameName(savedState.gameName || "");
+          setGameDescription(savedState.gameDescription || "");
+        }
+      } catch (error) {
+        console.warn("Failed to load saved state:", error);
+      }
+    };
+    loadSavedState();
+  }, []);
+
+  // Check for resumable generations on app start
+  useEffect(() => {
+    const checkResumableGenerations = async () => {
+      try {
+        const activeIds = await backgroundGenerationService.getActiveGenerations();
+        if (activeIds.length > 0) {
+          // Show resume option instead of auto-resuming
+          Alert.alert(
+            "Resume Generation?",
+            "Found an unfinished game generation from your last session. Would you like to resume it?",
+            [
+              {
+                text: "Start New",
+                style: "destructive",
+                onPress: async () => {
+                  // Clear the old generation
+                  for (const id of activeIds) {
+                    await backgroundGenerationService.stopGeneration(id);
+                  }
+                }
+              },
+              {
+                text: "Resume",
+                style: "default",
+                onPress: async () => {
+                  // Resume the first active generation
+                  const generationId = activeIds[0];
+                  setCurrentGenerationId(generationId);
+                  setIsGenerating(true);
+
+                  await backgroundGenerationService.startGeneration(generationId, "", {
+                    onProgress: (stage: string, progress: number) => {
+                      const stageMessages = {
+                        'simple_code': 'Generating simplest HTML...',
+                        'checklist': 'Creating improvement checklist...',
+                        'mvp_code': 'Implementing checklist improvements...',
+                        'linting_generic': 'Checking HTML syntax...',
+                        'mobile_optimize': 'Optimizing for mobile devices...',
+                        'linting_mobile': 'Checking mobile HTML syntax...',
+                        'final_inspection': 'Performing final quality check...',
+                        'fixing_inspection': 'Fixing final issues...',
+                        'complete': 'Game generation complete!',
+                      };
+                      setCurrentStage(stage as GenerationStage);
+                      setStageMessage(stageMessages[stage as keyof typeof stageMessages] || stage);
+                    },
+                    onComplete: (html: string, tokens: any) => {
+                      setGameHtml(html);
+                      setCumulativeTokens(tokens);
+                      setIsGenerating(false);
+                      setCurrentStage('complete');
+                      setStageMessage('Game generation complete!');
+                      setCurrentGenerationId(null);
+                    },
+                    onError: (error: Error) => {
+                      console.error("Background generation failed:", error);
+                      Alert.alert("Error", "Failed to generate game. Please try again.");
+                      setIsGenerating(false);
+                      setCurrentStage('complete');
+                      setStageMessage('');
+                      setCurrentGenerationId(null);
+                    }
+                  });
+                }
+              }
+            ]
+          );
+        }
+      } catch (error) {
+        console.warn("Failed to check resumable generations:", error);
+      }
+    };
+
+    checkResumableGenerations();
+  }, []);
+
+  // Save state
+  useEffect(() => {
+    const saveState = async () => {
+      try {
+        await GameStorage.saveCreateTabState({
+          input,
+          gameHtml,
+          hasCustomGame: !!gameHtml,
+          gameName,
+          gameDescription,
+        });
+      } catch (error) {
+        console.warn("Failed to save state:", error);
+      }
+    };
+    const timeoutId = setTimeout(saveState, 500);
+    return () => clearTimeout(timeoutId);
+  }, [input, gameHtml, gameName, gameDescription]);
+
+  // Keyboard listeners
+  useEffect(() => {
+    const showListener = Keyboard.addListener(
+      Platform.OS === 'ios' ? 'keyboardWillShow' : 'keyboardDidShow',
+      () => setKeyboardVisible(true)
+    );
+    const hideListener = Keyboard.addListener(
+      Platform.OS === 'ios' ? 'keyboardWillHide' : 'keyboardDidHide',
+      () => setKeyboardVisible(false)
+    );
+    return () => {
+      showListener.remove();
+      hideListener.remove();
+    };
+  }, []);
+
+  // Request notification permissions
+  useEffect(() => {
+    const requestPermissions = async () => {
+      try {
+        const { status } = await Notifications.requestPermissionsAsync();
+        console.log('Notification permissions status:', status);
+      } catch (error) {
+        console.warn('Failed to request notification permissions:', error);
+      }
+    };
+
+    requestPermissions();
+  }, []);
+
+  // Cleanup background service on unmount
+  useEffect(() => {
+    return () => {
+      if (currentGenerationId) {
+        backgroundGenerationService.stopGeneration(currentGenerationId);
+      }
+      // Note: We don't destroy the service here as it might be used by other components
+    };
+  }, [currentGenerationId, backgroundGenerationService]);
+
+  // Stage progress animation
+  useEffect(() => {
+    const stageToProgress: Record<GenerationStage, number> = {
+      'simple_code': 0.14,
+      'checklist': 0.28,
+      'mvp_code': 0.42,
+      'linting_generic': 0.56,
+      'mobile_optimize': 0.70,
+      'linting_mobile': 0.84,
+      'final_inspection': 0.92,
+      'fixing_inspection': 0.96,
+      'complete': 1.0,
+    };
+
+    Animated.timing(stageProgressAnimation, {
+      toValue: stageToProgress[currentStage],
+      duration: 500,
+      easing: Easing.out(Easing.cubic),
+      useNativeDriver: false,
+    }).start();
+  }, [currentStage]);
+
+  // Reset token tracking
+  const resetCumulativeTokens = () => {
+    setCumulativeTokens({
+      prompt_tokens: 0,
+      completion_tokens: 0,
+      total_tokens: 0,
+    });
   };
 
-  // Update agent step status
-  const updateAgentStep = (index: number, status: AgentStep['status'], output?: string, error?: string) => {
-    setAgentSteps(prev => prev.map((step, i) => 
-      i === index ? { ...step, status, output, error } : step
-    ));
+  // Update token usage
+  const updateTokenUsage = (usage: any) => {
+    if (!usage) return;
+    
+    setCumulativeTokens(prev => ({
+      prompt_tokens: prev.prompt_tokens + (usage.prompt_tokens || 0),
+      completion_tokens: prev.completion_tokens + (usage.completion_tokens || 0),
+      total_tokens: prev.total_tokens + (usage.total_tokens || 0),
+    }));
   };
 
-  // Get current game HTML
-  const getCurrentGameHtml = (): string => {
-    if (!generationSession || generationSession.versions.length === 0) {
-      return generateDefaultGame();
-    }
-    return generationSession.versions[generationSession.currentVersionIndex].html;
-  };
 
-  // Main generation workflow
+  // Main generation pipeline using background service
   const handleSend = async () => {
-    const text = input.trim();
-    if (!text || isGenerating) return;
+    const userTopic = input.trim();
+    if (!userTopic || isGenerating) return;
 
     setInput("");
     Keyboard.dismiss();
     setIsGenerating(true);
-    setCurrentStep(0);
-    setAgentSteps(initializeAgentSteps());
-    setCumulativeTokens({ prompt: 0, completion: 0, total: 0 });
+    resetCumulativeTokens();
+    setGameHtml("");
+    setChecklist("");
 
-    if (!generationSession) {
-      await handleInitialGeneration(text);
-    } else {
-      await handleIterativeGeneration(text);
-    }
-  };
-
-  // Initial 5-agent workflow
-  const handleInitialGeneration = async (prompt: string) => {
-    GenerationActions.start(5 * 60 * 1000); // 5 minutes for workflow
-    GenerationActions.show();
-
-    const newSession: GenerationSession = {
-      initialPrompt: prompt,
-      versions: [],
-      currentVersionIndex: -1,
-    };
-    setGenerationSession(newSession);
+    // Generate unique ID for this generation session
+    const generationId = `generation_${Date.now()}_${Math.random().toString(36).substr(2, 9)}`;
+    setCurrentGenerationId(generationId);
 
     try {
-      // Step 1: Simple Coder Agent
-      setCurrentStep(1);
-      updateAgentStep(0, 'running');
-      Animated.timing(progressAnimation, { toValue: 0.2, duration: 300, useNativeDriver: false }).start();
-      
-      const { html: simpleHtml, tokenUsage: tokens1 } = await agentSimpleCode(prompt);
-      updateAgentStep(0, 'complete', 'Generated basic HTML game');
-      setCumulativeTokens(prev => ({
-        prompt: prev.prompt + tokens1.prompt,
-        completion: prev.completion + tokens1.completion,
-        total: prev.total + tokens1.total,
-      }));
+      await backgroundGenerationService.startGeneration(generationId, userTopic, {
+        onProgress: (stage: string, progress: number) => {
+          const stageMessages = {
+            'simple_code': 'Generating simplest HTML...',
+            'checklist': 'Creating improvement checklist...',
+            'mvp_code': 'Implementing checklist improvements...',
+            'linting_generic': 'Checking HTML syntax...',
+            'mobile_optimize': 'Optimizing for mobile devices...',
+            'linting_mobile': 'Checking mobile HTML syntax...',
+            'final_inspection': 'Performing final quality check...',
+            'fixing_inspection': 'Fixing final issues...',
+            'complete': 'Game generation complete!',
+          };
+          setCurrentStage(stage as GenerationStage);
+          setStageMessage(stageMessages[stage as keyof typeof stageMessages] || stage);
+        },
+        onComplete: (html: string, tokens: any) => {
+          setGameHtml(html);
+          setCumulativeTokens(tokens);
+          setIsGenerating(false);
+          setCurrentStage('complete');
+          setStageMessage('Game generation complete!');
+          setCurrentGenerationId(null);
 
-      // Step 2: Checklist Agent
-      setCurrentStep(2);
-      updateAgentStep(1, 'running');
-      Animated.timing(progressAnimation, { toValue: 0.4, duration: 300, useNativeDriver: false }).start();
-      
-      const { checklist, tokenUsage: tokens2 } = await agentChecklist(simpleHtml, prompt);
-      updateAgentStep(1, 'complete', 'Created improvement checklist');
-      setCumulativeTokens(prev => ({
-        prompt: prev.prompt + tokens2.prompt,
-        completion: prev.completion + tokens2.completion,
-        total: prev.total + tokens2.total,
-      }));
-
-      // Step 3: MVP Builder with linting loop
-      setCurrentStep(3);
-      updateAgentStep(2, 'running');
-      Animated.timing(progressAnimation, { toValue: 0.6, duration: 300, useNativeDriver: false }).start();
-      
-      let mvpHtml = simpleHtml;
-      let lintAttempts = 0;
-      const maxLintAttempts = 5;
-
-      // Initial MVP build
-      const { html: initialMvp, tokenUsage: tokens3a } = await agentCode(checklist, mvpHtml);
-      mvpHtml = initialMvp;
-      setCumulativeTokens(prev => ({
-        prompt: prev.prompt + tokens3a.prompt,
-        completion: prev.completion + tokens3a.completion,
-        total: prev.total + tokens3a.total,
-      }));
-
-      // Linting loop for MVP
-      while (lintAttempts < maxLintAttempts) {
-        const lintErrors = lintHtml(mvpHtml);
-        if (lintErrors.length === 0) break;
-
-        lintAttempts++;
-        const lintFeedback = formatErrorsForPrompt(lintErrors);
-        const { html: fixedHtml, tokenUsage: tokensLint } = await agentCode(checklist, mvpHtml, lintFeedback);
-        mvpHtml = fixedHtml;
-        setCumulativeTokens(prev => ({
-          prompt: prev.prompt + tokensLint.prompt,
-          completion: prev.completion + tokensLint.completion,
-          total: prev.total + tokensLint.total,
-        }));
-      }
-
-      updateAgentStep(2, 'complete', `Built MVP with ${lintAttempts} lint fixes`);
-
-      // Step 4: Mobile Optimizer with linting loop
-      setCurrentStep(4);
-      updateAgentStep(3, 'running');
-      Animated.timing(progressAnimation, { toValue: 0.8, duration: 300, useNativeDriver: false }).start();
-      
-      let mobileHtml = mvpHtml;
-      lintAttempts = 0;
-
-      // Initial mobile optimization
-      const { html: initialMobile, tokenUsage: tokens4a } = await agentMobileOptimize(mobileHtml);
-      mobileHtml = initialMobile;
-      setCumulativeTokens(prev => ({
-        prompt: prev.prompt + tokens4a.prompt,
-        completion: prev.completion + tokens4a.completion,
-        total: prev.total + tokens4a.total,
-      }));
-
-      // Linting loop for mobile
-      while (lintAttempts < maxLintAttempts) {
-        const lintErrors = lintHtml(mobileHtml);
-        if (lintErrors.length === 0) break;
-
-        lintAttempts++;
-        const lintFeedback = formatErrorsForPrompt(lintErrors);
-        const { html: fixedMobile, tokenUsage: tokensLint } = await agentMobileOptimize(mobileHtml, lintFeedback);
-        mobileHtml = fixedMobile;
-        setCumulativeTokens(prev => ({
-          prompt: prev.prompt + tokensLint.prompt,
-          completion: prev.completion + tokensLint.completion,
-          total: prev.total + tokensLint.total,
-        }));
-      }
-
-      updateAgentStep(3, 'complete', `Mobile optimized with ${lintAttempts} lint fixes`);
-
-      // Step 5: Final Inspector
-      setCurrentStep(5);
-      updateAgentStep(4, 'running');
-      Animated.timing(progressAnimation, { toValue: 1.0, duration: 300, useNativeDriver: false }).start();
-      
-      const { inspection, tokenUsage: tokens5 } = await agentFinalInspection(mobileHtml, prompt);
-      setCumulativeTokens(prev => ({
-        prompt: prev.prompt + tokens5.prompt,
-        completion: prev.completion + tokens5.completion,
-        total: prev.total + tokens5.total,
-      }));
-
-      // Check if final fixes needed
-      if (inspection.includes("DONE") && inspection.split('\n').length > 1) {
-        const { html: finalHtml, tokenUsage: tokens5b } = await agentMobileOptimize(mobileHtml, undefined, inspection);
-        mobileHtml = finalHtml;
-        setCumulativeTokens(prev => ({
-          prompt: prev.prompt + tokens5b.prompt,
-          completion: prev.completion + tokens5b.completion,
-          total: prev.total + tokens5b.total,
-        }));
-        updateAgentStep(4, 'complete', 'Fixed final inspection issues');
-      } else {
-        updateAgentStep(4, 'complete', 'No issues found in final inspection');
-      }
-
-      // Add final version to session
-      const finalVersion: GameVersion = {
-        html: mobileHtml,
-        prompt,
-        timestamp: Date.now(),
-        stage: 'final',
-      };
-
-      const updatedSession: GenerationSession = {
-        ...newSession,
-        versions: [finalVersion],
-        currentVersionIndex: 0,
-      };
-
-      setGenerationSession(updatedSession);
-      setCurrentStep(6);
+          // Display token summary
+          console.log("=".repeat(60));
+          console.log("🎯 CUMULATIVE TOKEN USAGE SUMMARY");
+          console.log("=".repeat(60));
+          console.log(`📝 Total Prompt Tokens:     ${tokens.prompt_tokens.toLocaleString()}`);
+          console.log(`🤖 Total Completion Tokens: ${tokens.completion_tokens.toLocaleString()}`);
+          console.log(`💰 Total Tokens Used:       ${tokens.total_tokens.toLocaleString()}`);
+          console.log("=".repeat(60));
+        },
+        onError: (error: Error) => {
+          console.error("Background generation failed:", error);
+          Alert.alert("Error", "Failed to generate game. Please try again.");
+          setIsGenerating(false);
+          setCurrentStage('complete');
+          setStageMessage('');
+          setCurrentGenerationId(null);
+        }
+      });
 
     } catch (error) {
-      console.error("Generation failed:", error);
-      updateAgentStep(currentStep - 1, 'error', undefined, error instanceof Error ? error.message : String(error));
-      Alert.alert("Error", "Failed to generate game. Please try again.");
-    } finally {
+      console.error("Failed to start background generation:", error);
+      Alert.alert("Error", "Failed to start game generation. Please try again.");
       setIsGenerating(false);
-      GenerationActions.stop();
-      GenerationActions.hide();
+      setCurrentStage('complete');
+      setStageMessage('');
+      setCurrentGenerationId(null);
     }
   };
 
-  // Iterative generation (simplified single-agent approach)
-  const handleIterativeGeneration = async (prompt: string) => {
-    if (!generationSession || generationSession.versions.length === 0) return;
-
-    GenerationActions.start(1 * 60 * 1000); // 1 minute for iteration
-    GenerationActions.show();
-
-    try {
-      setCurrentStep(1);
-      setAgentSteps([{ name: "Iteration", status: 'running' }]);
-      
-      const currentHtml = getCurrentGameHtml();
-      const { html: newHtml, tokenUsage } = await agentMobileOptimize(currentHtml, undefined, `Apply this change: ${prompt}`);
-      
-      setCumulativeTokens(tokenUsage);
-      
-      const newVersion: GameVersion = {
-        html: newHtml,
-        prompt,
-        timestamp: Date.now(),
-        stage: 'mobile',
-      };
-
-      const updatedSession: GenerationSession = {
-        ...generationSession,
-        versions: [...generationSession.versions, newVersion],
-        currentVersionIndex: generationSession.versions.length,
-      };
-
-      setGenerationSession(updatedSession);
-      updateAgentStep(0, 'complete', 'Applied changes successfully');
-
-    } catch (error) {
-      console.error("Iteration failed:", error);
-      updateAgentStep(0, 'error', undefined, error instanceof Error ? error.message : String(error));
-      Alert.alert("Error", "Failed to update game. Please try again.");
-    } finally {
-      setIsGenerating(false);
-      GenerationActions.stop();
-      GenerationActions.hide();
+  const handleNewGame = async () => {
+    // Stop any active background generation
+    if (currentGenerationId) {
+      await backgroundGenerationService.stopGeneration(currentGenerationId);
+      setCurrentGenerationId(null);
     }
-  };
 
-  // New chat
-  const handleNewChat = () => {
-    setGenerationSession(null);
+    setGameHtml("");
+    setChecklist("");
     setInput("");
     setGameName("");
     setGameDescription("");
+    setCurrentStage('complete');
+    setStageMessage("");
+    resetCumulativeTokens();
     setIsGenerating(false);
-    setCurrentStep(0);
-    setAgentSteps([]);
-    setCumulativeTokens({ prompt: 0, completion: 0, total: 0 });
-    progressAnimation.setValue(0);
     GameStorage.clearCreateTabState().catch(console.warn);
   };
 
-  // Publishing
   const handlePublish = () => {
-    if (!generationSession || generationSession.versions.length === 0) {
+    if (!gameHtml) {
       Alert.alert("No Game", "Please create a game first before publishing.");
       return;
     }
+
     setShowPublishModal(true);
-    Animated.spring(scaleAnimation, { toValue: 1, useNativeDriver: true, tension: 50, friction: 8 }).start();
+    setPublishSuccess(false);
+    scaleAnimation.setValue(0);
+    Animated.spring(scaleAnimation, {
+      toValue: 1,
+      useNativeDriver: true,
+      tension: 50,
+      friction: 8,
+    }).start();
   };
 
   const confirmPublish = async () => {
     if (!gameName.trim()) return;
+
     setIsPublishing(true);
 
     try {
-      const authorHandle = user ? `@${(user.displayName || user.uid).replace(/[^a-zA-Z0-9]/g, "").toLowerCase()}` : "@you";
-      const gameHtml = getCurrentGameHtml();
+      const authorHandle = user
+        ? `@${(user.displayName || user.uid).replace(/[^a-zA-Z0-9]/g, "").toLowerCase()}`
+        : "@you";
 
       const savedGame = await GameStorage.saveGame({
         title: gameName.trim(),
@@ -791,6 +438,7 @@ export default function GameCreator({ onGamePublished }: GameCreatorProps = {}) 
         category: "AI Generated",
       });
 
+      // Save to Firebase if available
       try {
         const gameService = SimpleGameService.getInstance();
         await gameService.publishGame({
@@ -812,13 +460,29 @@ export default function GameCreator({ onGamePublished }: GameCreatorProps = {}) 
       }
 
       setIsPublishing(false);
+      setPublishSuccess(true);
+
+      Animated.sequence([
+        Animated.timing(successAnimation, {
+          toValue: 1,
+          duration: 500,
+          useNativeDriver: true,
+        }),
+        Animated.delay(1500),
+        Animated.timing(successAnimation, {
+          toValue: 0,
+          duration: 300,
+          useNativeDriver: true,
+        }),
+      ]).start(() => {
       setShowPublishModal(false);
       setGameName("");
       setGameDescription("");
-      handleNewChat();
+        setPublishSuccess(false);
+        handleNewGame();
 
       if (onGamePublished) {
-        const feedGame = {
+          onGamePublished({
           id: savedGame.id,
           title: savedGame.title,
           author: savedGame.author,
@@ -827,14 +491,9 @@ export default function GameCreator({ onGamePublished }: GameCreatorProps = {}) 
           html: savedGame.html,
           duration: savedGame.duration,
           category: savedGame.category,
-          views: savedGame.views,
-          comments: savedGame.comments,
-        };
-        onGamePublished(feedGame);
+          });
       }
-
-      Alert.alert("Success", "Game published successfully!");
-
+      });
     } catch (error) {
       console.error("Failed to publish game:", error);
       setIsPublishing(false);
@@ -846,96 +505,84 @@ export default function GameCreator({ onGamePublished }: GameCreatorProps = {}) 
     setShowPublishModal(false);
     setGameName("");
     setGameDescription("");
+    setPublishSuccess(false);
   };
 
   return (
     <SafeAreaView style={styles.container} edges={[]}>
       {/* Header */}
-      <View style={styles.headerContainer}>
-        <BlurView intensity={30} tint="dark" style={styles.headerBlur}>
           <View style={styles.header}>
-            <Text style={styles.title}>Game Studio</Text>
+        <Text style={styles.title}>AI Game Studio</Text>
             <View style={styles.headerButtons}>
-              <Pressable style={styles.newChatBtn} onPress={handleNewChat}>
-                <CustomIcon name="add" size={SCREEN_W * 0.05} color="#FFFFFF" />
+          <Pressable style={styles.headerBtn} onPress={() => {
+            Alert.alert(
+              "Background Processing Info",
+              "Currently using Expo Go - generation stops when app exits.\n\nFor true background processing:\n1. Create a development build\n2. Use 'eas build --platform android --profile development'\n\nSee README_BACKGROUND_PROCESSING.md for details.",
+              [{ text: "OK" }]
+            );
+          }}>
+            <CustomIcon name="help-circle" size={SCREEN_W * 0.05} color="#FFFFFF" />
+          </Pressable>
+          <Pressable style={styles.headerBtn} onPress={handleNewGame}>
+            <CustomIcon name="refresh" size={SCREEN_W * 0.05} color="#FFFFFF" />
               </Pressable>
-              <Pressable style={styles.publishBtn} onPress={handlePublish}>
+          <Pressable style={styles.headerBtn} onPress={handlePublish}>
                 <CustomIcon name="arrow-up" size={SCREEN_W * 0.05} color="#FFFFFF" />
               </Pressable>
             </View>
-          </View>
-        </BlurView>
       </View>
 
       {/* Main Content */}
       <KeyboardAvoidingView 
         style={styles.mainContent}
         behavior={Platform.OS === "ios" ? "padding" : "height"}
-        keyboardVerticalOffset={0}
       >
-        {/* Game Display */}
+        {/* Game Preview */}
         <View style={styles.gameContainer}>
           <View style={styles.gameFrame}>
+            {gameHtml ? (
             <WebView
-              key={generationSession?.currentVersionIndex || 0}
-              source={{ html: getCurrentGameHtml() }}
-              style={styles.gameWebview}
+                source={{ html: gameHtml }}
+                style={styles.webview}
               scrollEnabled={false}
               bounces={false}
               {...getWebViewConfig()}
-              onMessage={createWebViewMessageHandler()}
-              injectedJavaScript={getGameErrorMonitoringScript()}
-              startInLoadingState={true}
-              renderLoading={() => <ActivityIndicator size="large" color="#7C3AED" />}
-            />
+              />
+            ) : (
+              <View style={styles.placeholderContainer}>
+                <CustomIcon name="game-controller" size={SCREEN_W * 0.15} color="#4B5563" />
+                <Text style={styles.placeholderText}>Describe your game idea below</Text>
+              </View>
+            )}
 
-            {/* Agent Progress Overlay */}
+            {/* Generation Progress Overlay */}
             {isGenerating && (
               <View style={styles.progressOverlay}>
-                <BlurView intensity={25} tint="dark" style={styles.progressBlur}>
+                <BlurView intensity={30} tint="dark" style={styles.progressBlur}>
                   <View style={styles.progressContent}>
-                    <Text style={styles.progressTitle}>Building Your Game</Text>
+                    <Text style={styles.stageName}>{stageMessage}</Text>
                     
                     {/* Progress Bar */}
-                    <View style={styles.progressBarContainer}>
+                    <View style={styles.progressTrack}>
                       <Animated.View 
                         style={[
-                          styles.progressBar, 
-                          { width: progressAnimation.interpolate({
+                          styles.progressFill, 
+                          { 
+                            width: stageProgressAnimation.interpolate({
                             inputRange: [0, 1],
                             outputRange: ['0%', '100%']
-                          })}
+                            })
+                          }
                         ]} 
                       />
                     </View>
 
-                    {/* Agent Steps */}
-                    <View style={styles.agentSteps}>
-                      {agentSteps.map((step, index) => (
-                        <View key={index} style={styles.agentStep}>
-                          <View style={styles.agentStepIcon}>
-                            {step.status === 'pending' && <View style={styles.stepPending} />}
-                            {step.status === 'running' && <ActivityIndicator size="small" color="#7C3AED" />}
-                            {step.status === 'complete' && <CustomIcon name="checkmark" size={16} color="#10B981" />}
-                            {step.status === 'error' && <CustomIcon name="close" size={16} color="#EF4444" />}
-                          </View>
-                          <Text style={[
-                            styles.agentStepText,
-                            step.status === 'complete' && styles.agentStepComplete,
-                            step.status === 'error' && styles.agentStepError,
-                          ]}>
-                            {step.name}
-                          </Text>
-                        </View>
-                      ))}
-                    </View>
-
-                    {/* Token Usage */}
-                    {cumulativeTokens.total > 0 && (
-                      <View style={styles.tokenUsage}>
-                        <CustomIcon name="analytics-outline" size={14} color="#6B7280" />
-                        <Text style={styles.tokenUsageText}>
-                          {cumulativeTokens.total.toLocaleString()} tokens used
+                    {/* Token Counter */}
+                    {cumulativeTokens.total_tokens > 0 && (
+                      <View style={styles.tokenCounter}>
+                        <CustomIcon name="analytics-outline" size={SCREEN_W * 0.035} color="#6B7280" />
+                        <Text style={styles.tokenText}>
+                          {cumulativeTokens.total_tokens.toLocaleString()} tokens
                         </Text>
                       </View>
                     )}
@@ -947,34 +594,43 @@ export default function GameCreator({ onGamePublished }: GameCreatorProps = {}) 
         </View>
 
         {/* Input Section */}
-        <View style={[styles.inputSectionContainer, { paddingBottom: Math.max(insets.bottom, SCREEN_H * 0.02) }]}>
-          <BlurView intensity={24} tint="dark" style={styles.inputBlur}>
+        <View style={[
+          styles.inputSection,
+          { paddingBottom: keyboardVisible ? insets.bottom + SCREEN_H * 0.05 : insets.bottom + SCREEN_H * 0.02 }
+        ]}>
             <View style={styles.inputContainer}>
               <TextInput
                 value={input}
                 onChangeText={setInput}
-                placeholder={generationSession ? "What would you like to change?" : "Describe your game idea..."}
+              placeholder="Describe your game idea..."
                 placeholderTextColor="#6B7280"
                 style={styles.input}
                 multiline
                 maxLength={1000}
-                textAlignVertical="top"
-                returnKeyType="send"
-                onSubmitEditing={handleSend}
+              editable={!isGenerating}
               />
               <Pressable
                 style={[styles.sendBtn, (!input.trim() || isGenerating) && styles.sendBtnDisabled]}
                 onPress={handleSend}
                 disabled={!input.trim() || isGenerating}
               >
-                <CustomIcon 
-                  name={isGenerating ? "hourglass" : "arrow-forward"} 
-                  size={SCREEN_W * 0.04} 
-                  color="#FFFFFF" 
+                <CustomIcon
+                  name={isGenerating ? "hourglass" : "arrow-forward"}
+                  size={SCREEN_W * 0.04}
+                  color="#FFFFFF"
                 />
               </Pressable>
             </View>
-          </BlurView>
+
+            {/* Generation Warning */}
+            {isGenerating && (
+              <View style={styles.generationWarning}>
+                <CustomIcon name="warning" size={SCREEN_W * 0.035} color="#F59E0B" />
+                <Text style={styles.warningText}>
+                  ⚠️ Keep app open! Generation stops when you exit. For background processing, use a development build.
+                </Text>
+              </View>
+            )}
         </View>
       </KeyboardAvoidingView>
 
@@ -983,6 +639,8 @@ export default function GameCreator({ onGamePublished }: GameCreatorProps = {}) 
         <KeyboardAvoidingView style={styles.modalOverlay} behavior={Platform.OS === "ios" ? "padding" : "height"}>
           <Pressable style={styles.modalBackdrop} onPress={closeModal} />
           <Animated.View style={[styles.modalContent, { transform: [{ scale: scaleAnimation }] }]}>
+            {!publishSuccess ? (
+              <>
             <View style={styles.modalHeader}>
               <Text style={styles.modalTitle}>Publish Game</Text>
               <Pressable onPress={closeModal}>
@@ -999,7 +657,6 @@ export default function GameCreator({ onGamePublished }: GameCreatorProps = {}) 
                   placeholder="Enter game name..."
                   placeholderTextColor="#6B7280"
                   style={styles.modalInput}
-                  returnKeyType="next"
                 />
               </View>
 
@@ -1013,7 +670,6 @@ export default function GameCreator({ onGamePublished }: GameCreatorProps = {}) 
                   style={[styles.modalInput, styles.textArea]}
                   multiline
                   numberOfLines={3}
-                  returnKeyType="done"
                 />
               </View>
             </ScrollView>
@@ -1034,6 +690,16 @@ export default function GameCreator({ onGamePublished }: GameCreatorProps = {}) 
                 )}
               </Pressable>
             </View>
+              </>
+            ) : (
+              <Animated.View style={[styles.successContainer, { opacity: successAnimation }]}>
+                <View style={styles.successIcon}>
+                  <CustomIcon name="checkmark" size={SCREEN_W * 0.12} color="#FFFFFF" />
+                </View>
+                <Text style={styles.successTitle}>Published!</Text>
+                <Text style={styles.successMessage}>Your game is now live</Text>
+              </Animated.View>
+            )}
           </Animated.View>
         </KeyboardAvoidingView>
       </Modal>
@@ -1046,26 +712,14 @@ const styles = StyleSheet.create({
     flex: 1,
     backgroundColor: "#000000",
   },
-  headerContainer: {
-    position: 'absolute',
-    top: 0,
-    left: 0,
-    right: 0,
-    zIndex: 100,
-  },
   header: {
     flexDirection: "row",
     justifyContent: "space-between",
     alignItems: "center",
     paddingHorizontal: SCREEN_W * 0.05,
-    paddingTop: SCREEN_H * 0.02,
-    paddingBottom: SCREEN_H * 0.015,
+    paddingVertical: SCREEN_H * 0.02,
     borderBottomWidth: 1,
-    borderBottomColor: "#111111",
-    backgroundColor: "rgba(0,0,0,0.35)",
-  },
-  headerBlur: {
-    backgroundColor: "rgba(0,0,0,0.25)",
+    borderBottomColor: "#1A1A1A",
   },
   title: {
     fontSize: SCREEN_W * 0.045,
@@ -1074,151 +728,93 @@ const styles = StyleSheet.create({
   },
   headerButtons: {
     flexDirection: "row",
-    gap: SCREEN_W * 0.01,
-    alignItems: "center",
+    gap: SCREEN_W * 0.03,
   },
-  newChatBtn: {
+  headerBtn: {
     padding: SCREEN_W * 0.02,
-    alignItems: "center",
-    justifyContent: "center",
-  },
-  publishBtn: {
-    padding: SCREEN_W * 0.02,
-    alignItems: "center",
-    justifyContent: "center",
   },
   mainContent: {
     flex: 1,
-    paddingTop: SCREEN_H * 0.06,
   },
   gameContainer: {
     flex: 1,
-    paddingHorizontal: SCREEN_W * 0.02,
-    paddingTop: SCREEN_H * 0.01,
-    paddingBottom: SCREEN_H * 0.01,
-    justifyContent: "center",
+    padding: SCREEN_W * 0.04,
   },
   gameFrame: {
     flex: 1,
     backgroundColor: "#1A1A1A",
-    borderRadius: Math.min(SCREEN_W * 0.04, 16),
+    borderRadius: SCREEN_W * 0.04,
     overflow: "hidden",
-    minHeight: SCREEN_H * 0.5,
-    maxHeight: SCREEN_H * 0.8,
     position: "relative",
-    shadowColor: "#000",
-    shadowOffset: { width: 0, height: SCREEN_H * 0.005 },
-    shadowOpacity: 0.3,
-    shadowRadius: SCREEN_H * 0.015,
-    elevation: 8,
   },
-  gameWebview: {
+  webview: {
     flex: 1,
     backgroundColor: "transparent",
-    opacity: 0.99,
-    overflow: 'hidden',
+  },
+  placeholderContainer: {
+    flex: 1,
+    alignItems: "center",
+    justifyContent: "center",
+    gap: SCREEN_H * 0.02,
+  },
+  placeholderText: {
+    color: "#6B7280",
+    fontSize: SCREEN_W * 0.04,
   },
   progressOverlay: {
     position: "absolute",
-    left: SCREEN_W * 0.04,
-    right: SCREEN_W * 0.04,
-    bottom: SCREEN_W * 0.04,
+    left: 0,
+    right: 0,
+    bottom: 0,
+    padding: SCREEN_W * 0.04,
+  },
+  progressBlur: {
     borderRadius: SCREEN_W * 0.03,
     overflow: "hidden",
   },
-  progressBlur: {
-    paddingHorizontal: SCREEN_W * 0.04,
-    paddingVertical: SCREEN_H * 0.02,
-  },
   progressContent: {
-    alignItems: "center",
-    gap: SCREEN_H * 0.015,
+    padding: SCREEN_W * 0.04,
   },
-  progressTitle: {
+  stageName: {
     color: "#FFFFFF",
-    fontSize: SCREEN_W * 0.04,
-    fontWeight: "700",
-    textAlign: "center",
+    fontSize: SCREEN_W * 0.035,
+    fontWeight: "600",
+    marginBottom: SCREEN_H * 0.015,
   },
-  progressBarContainer: {
-    width: "100%",
-    height: SCREEN_H * 0.008,
-    backgroundColor: "rgba(255,255,255,0.2)",
-    borderRadius: SCREEN_H * 0.004,
+  progressTrack: {
+    height: SCREEN_H * 0.006,
+    backgroundColor: "rgba(255,255,255,0.1)",
+    borderRadius: SCREEN_H * 0.003,
     overflow: "hidden",
   },
-  progressBar: {
+  progressFill: {
     height: "100%",
     backgroundColor: "#7C3AED",
-    borderRadius: SCREEN_H * 0.004,
+    borderRadius: SCREEN_H * 0.003,
   },
-  agentSteps: {
-    gap: SCREEN_H * 0.01,
-    width: "100%",
-  },
-  agentStep: {
-    flexDirection: "row",
-    alignItems: "center",
-    gap: SCREEN_W * 0.03,
-    paddingHorizontal: SCREEN_W * 0.02,
-  },
-  agentStepIcon: {
-    width: SCREEN_W * 0.06,
-    height: SCREEN_W * 0.06,
-    alignItems: "center",
-    justifyContent: "center",
-  },
-  stepPending: {
-    width: SCREEN_W * 0.015,
-    height: SCREEN_W * 0.015,
-    borderRadius: SCREEN_W * 0.0075,
-    backgroundColor: "rgba(255,255,255,0.3)",
-  },
-  agentStepText: {
-    color: "rgba(255,255,255,0.7)",
-    fontSize: SCREEN_W * 0.035,
-    fontWeight: "500",
-    flex: 1,
-  },
-  agentStepComplete: {
-    color: "#10B981",
-    fontWeight: "600",
-  },
-  agentStepError: {
-    color: "#EF4444",
-    fontWeight: "600",
-  },
-  tokenUsage: {
+  tokenCounter: {
     flexDirection: "row",
     alignItems: "center",
     gap: SCREEN_W * 0.02,
-    backgroundColor: "rgba(255,255,255,0.1)",
-    paddingHorizontal: SCREEN_W * 0.03,
-    paddingVertical: SCREEN_H * 0.008,
-    borderRadius: SCREEN_W * 0.02,
-    marginTop: SCREEN_H * 0.01,
+    marginTop: SCREEN_H * 0.015,
   },
-  tokenUsageText: {
+  tokenText: {
     color: "#6B7280",
     fontSize: SCREEN_W * 0.03,
-    fontWeight: "500",
-    fontVariant: ['tabular-nums'],
+    fontVariant: ["tabular-nums"],
   },
-  inputSectionContainer: {
+  inputSection: {
     paddingHorizontal: SCREEN_W * 0.04,
-    paddingTop: SCREEN_H * 0.01,
-    backgroundColor: "transparent",
   },
   inputContainer: {
     flexDirection: "row",
     alignItems: "flex-end",
-    backgroundColor: "#111111",
+    backgroundColor: "#1A1A1A",
     borderRadius: SCREEN_W * 0.06,
     paddingLeft: SCREEN_W * 0.04,
     paddingRight: SCREEN_W * 0.015,
     borderWidth: 1,
     borderColor: "#333333",
-    minHeight: SCREEN_H * 0.06,
   },
   input: {
     flex: 1,
@@ -1227,8 +823,6 @@ const styles = StyleSheet.create({
     maxHeight: SCREEN_H * 0.1,
     minHeight: SCREEN_H * 0.045,
     paddingVertical: SCREEN_H * 0.015,
-    paddingRight: SCREEN_W * 0.02,
-    textAlignVertical: "center",
   },
   sendBtn: {
     width: SCREEN_W * 0.09,
@@ -1237,23 +831,33 @@ const styles = StyleSheet.create({
     justifyContent: "center",
     backgroundColor: "#7C3AED",
     borderRadius: SCREEN_W * 0.045,
-    marginBottom: SCREEN_H * 0.005,
-    marginLeft: SCREEN_W * 0.02,
-    marginVertical: SCREEN_H * 0.005,
+    margin: SCREEN_H * 0.005,
   },
   sendBtnDisabled: {
     opacity: 0.5,
   },
-  inputBlur: {
-    borderRadius: SCREEN_W * 0.07,
-    overflow: "hidden",
-    backgroundColor: "rgba(17,17,17,0.4)",
+  generationWarning: {
+    flexDirection: "row",
+    alignItems: "center",
+    backgroundColor: "rgba(245, 158, 11, 0.1)",
+    borderRadius: SCREEN_W * 0.02,
+    paddingHorizontal: SCREEN_W * 0.03,
+    paddingVertical: SCREEN_H * 0.01,
+    marginTop: SCREEN_H * 0.01,
+    borderWidth: 1,
+    borderColor: "rgba(245, 158, 11, 0.3)",
+  },
+  warningText: {
+    color: "#F59E0B",
+    fontSize: SCREEN_W * 0.032,
+    fontWeight: "500",
+    marginLeft: SCREEN_W * 0.02,
+    flex: 1,
   },
   modalOverlay: {
     flex: 1,
     justifyContent: "center",
     paddingHorizontal: SCREEN_W * 0.05,
-    paddingVertical: SCREEN_H * 0.08,
   },
   modalBackdrop: {
     position: "absolute",
@@ -1264,22 +868,17 @@ const styles = StyleSheet.create({
     backgroundColor: "rgba(0, 0, 0, 0.7)",
   },
   modalContent: {
-    backgroundColor: "#111111",
-    borderRadius: SCREEN_W * 0.06,
-    width: "100%",
-    maxWidth: SCREEN_W * 0.9,
+    backgroundColor: "#1A1A1A",
+    borderRadius: SCREEN_W * 0.04,
     maxHeight: "80%",
-    borderWidth: 1,
-    borderColor: "#333333",
-    alignSelf: "center",
   },
   modalHeader: {
     flexDirection: "row",
     justifyContent: "space-between",
     alignItems: "center",
-    paddingHorizontal: SCREEN_W * 0.06,
-    paddingTop: SCREEN_H * 0.06,
-    paddingBottom: SCREEN_H * 0.04,
+    padding: SCREEN_W * 0.05,
+    borderBottomWidth: 1,
+    borderBottomColor: "#333333",
   },
   modalTitle: {
     fontSize: SCREEN_W * 0.05,
@@ -1287,22 +886,20 @@ const styles = StyleSheet.create({
     color: "#FFFFFF",
   },
   modalBody: {
-    paddingHorizontal: SCREEN_W * 0.06,
-    paddingVertical: SCREEN_H * 0.01,
-    maxHeight: SCREEN_H * 0.4,
+    padding: SCREEN_W * 0.05,
   },
   inputGroup: {
-    gap: SCREEN_H * 0.01,
     marginBottom: SCREEN_H * 0.025,
   },
   inputLabel: {
     fontSize: SCREEN_W * 0.035,
     fontWeight: "600",
-    color: "#A1A1AA",
+    color: "#6B7280",
+    marginBottom: SCREEN_H * 0.01,
   },
   modalInput: {
     backgroundColor: "#000000",
-    borderRadius: SCREEN_W * 0.03,
+    borderRadius: SCREEN_W * 0.02,
     paddingHorizontal: SCREEN_W * 0.04,
     paddingVertical: SCREEN_H * 0.015,
     color: "#FFFFFF",
@@ -1317,9 +914,9 @@ const styles = StyleSheet.create({
   modalFooter: {
     flexDirection: "row",
     justifyContent: "flex-end",
-    alignItems: "center",
-    paddingHorizontal: SCREEN_W * 0.06,
-    paddingVertical: SCREEN_H * 0.06,
+    padding: SCREEN_W * 0.05,
+    borderTopWidth: 1,
+    borderTopColor: "#333333",
     gap: SCREEN_W * 0.03,
   },
   cancelBtn: {
@@ -1327,7 +924,7 @@ const styles = StyleSheet.create({
     paddingVertical: SCREEN_H * 0.012,
   },
   cancelText: {
-    color: "#A1A1AA",
+    color: "#6B7280",
     fontSize: SCREEN_W * 0.04,
     fontWeight: "600",
   },
@@ -1335,9 +932,7 @@ const styles = StyleSheet.create({
     backgroundColor: "#7C3AED",
     paddingHorizontal: SCREEN_W * 0.06,
     paddingVertical: SCREEN_H * 0.015,
-    borderRadius: SCREEN_W * 0.03,
-    minWidth: SCREEN_W * 0.25,
-    alignItems: "center",
+    borderRadius: SCREEN_W * 0.02,
   },
   confirmBtnDisabled: {
     opacity: 0.5,
@@ -1346,5 +941,28 @@ const styles = StyleSheet.create({
     color: "#FFFFFF",
     fontSize: SCREEN_W * 0.04,
     fontWeight: "700",
+  },
+  successContainer: {
+    alignItems: "center",
+    padding: SCREEN_W * 0.1,
+  },
+  successIcon: {
+    width: SCREEN_W * 0.2,
+    height: SCREEN_W * 0.2,
+    backgroundColor: "#10B981",
+    borderRadius: SCREEN_W * 0.1,
+    alignItems: "center",
+    justifyContent: "center",
+    marginBottom: SCREEN_H * 0.02,
+  },
+  successTitle: {
+    fontSize: SCREEN_W * 0.06,
+    fontWeight: "700",
+    color: "#FFFFFF",
+    marginBottom: SCREEN_H * 0.01,
+  },
+  successMessage: {
+    fontSize: SCREEN_W * 0.04,
+    color: "#6B7280",
   },
 });
