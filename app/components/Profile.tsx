@@ -13,7 +13,6 @@ import {
 
   useWindowDimensions,
 } from "react-native";
-import { Ionicons } from "@expo/vector-icons";
 import { CustomIcon } from "../../components/ui/CustomIcon";
 import { SafeAreaView } from "react-native-safe-area-context";
 

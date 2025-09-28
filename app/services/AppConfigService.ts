@@ -62,7 +62,6 @@ export class AppConfigService {
       } else {
         // Return default config if document doesn't exist
         const defaultConfig: AppConfig = {
-          model_name: 'gpt-4',
           reasoning_effort: 'low',
           verbosity: 'medium',
           features: {
@@ -94,7 +93,6 @@ export class AppConfigService {
       
       // Return minimal default config on error
       const fallbackConfig: AppConfig = {
-        model_name: 'gpt-4',
         reasoning_effort: 'low',
         verbosity: 'medium'
       };

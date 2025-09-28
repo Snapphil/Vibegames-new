@@ -121,8 +121,7 @@ async function initializeOptimalDatabase() {
     const configRef = doc(db, 'app_config', 'settings');
     await setDoc(configRef, {
       // AI/GPT Configuration
-      api_key_gpt: "your-openai-api-key-here", // Replace with actual key in production
-      model_name: "gpt-4",
+      api_key_gpt: process.env.OPENAI_API_KEY || "your-openai-api-key-here",
       reasoning_effort: "low",
       verbosity: "medium",
       

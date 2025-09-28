@@ -11,7 +11,7 @@ import Profile from "./components/Profile";
 import type { PlayFeedRef } from "./components/PlayFeed";
 import ActivityTrackerInstance from "./services/ActivityTracker";
 
-import { useAuth } from "./auth/AuthProvider";
+import { AuthProvider, useAuth } from "./auth/AuthProvider";
 import SignInScreen from "./auth/SignInScreen";
 
 // Animated Tab Button Component
@@ -120,16 +120,9 @@ function AppContent() {
   const [activeTab, setActiveTab] = useState<"play" | "create" | "profile">("play");
   const playFeedRef = useRef<PlayFeedRef>(null);
   const [pendingGame, setPendingGame] = useState<any>(null);
-
+  
   const insets = useSafeAreaInsets();
   const { user, initializing, authError } = useAuth();
-
-  console.log('📱 AppContent: Render state:', {
-    hasUser: !!user,
-    userId: user?.uid,
-    initializing,
-    authError
-  });
 
   // Start/stop activity tracking based on user authentication
   React.useEffect(() => {
@@ -242,7 +235,11 @@ function AppContent() {
 }
 
 export default function App() {
-  return <AppContent />;
+  return (
+    <AuthProvider>
+      <AppContent />
+    </AuthProvider>
+  );
 }
 
 const styles = StyleSheet.create({

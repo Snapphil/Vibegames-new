@@ -1,0 +1,413 @@
+<!doctype html>
+<html lang="en">
+<head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width,initial-scale=1" />
+    <title>3D Physics Puzzle — Three.js + cannon-es</title>
+    <style>
+        html,body{height:100%;margin:0;background:#0b1020;color:#eee;font-family:Inter,Arial,Helvetica,sans-serif}
+        #container{width:100%;height:100%;overflow:hidden;position:relative}
+        canvas{display:block}
+        .ui{position:absolute;left:12px;top:12px;z-index:20;backdrop-filter:blur(6px);background:rgba(0,0,0,0.25);padding:10px;border-radius:8px}
+        .ui .row{margin-bottom:6px}
+        .big{font-size:18px;font-weight:600}
+        .small{font-size:13px;opacity:0.9}
+        #joystick{position:absolute;right:16px;bottom:16px;width:140px;height:140px;border-radius:50%;background:rgba(255,255,255,0.03);display:flex;align-items:center;justify-content:center;touch-action:none}
+        #stick{width:64px;height:64px;border-radius:50%;background:rgba(255,255,255,0.08);box-shadow:0 6px 18px rgba(0,0,0,0.6)}
+        button{background:#1e88e5;border:none;color:white;padding:8px 10px;border-radius:6px;cursor:pointer}
+        button.secondary{background:transparent;border:1px solid rgba(255,255,255,0.08)}
+        #instructions{position:absolute;left:12px;bottom:12px;z-index:20;max-width:360px;background:rgba(0,0,0,0.18);padding:10px;border-radius:8px;font-size:13px}
+        .coin-counter{display:flex;gap:8px;align-items:center}
+        .coin-icon{width:18px;height:18px;border-radius:50%;background:gold;box-shadow:0 0 8px rgba(255,220,0,0.6)}
+    </style>
+</head>
+<body>
+    <div id="container"></div>
+    <div class="ui" id="hud">
+        <div class="row big">3D Physics Puzzle</div>
+        <div class="row coin-counter"><div class="coin-icon"></div><div id="coinCount">0</div><div class="small">/ <span id="coinTotal">0</span> coins</div></div>
+        <div class="row small">Tilt device or use joystick / arrow keys to tilt plane.</div>
+        <div class="row"><button id="reset">Reset</button> <button id="slowmo" class="secondary">Toggle Slow Motion</button></div>
+    </div>
+    <div id="instructions">
+        <div><strong>Objective</strong>: Roll the ball and collect all hovering coins. Use switches and weight plates to open gates. Mistakes trigger a slow-motion rewind.</div>
+        <div style="margin-top:8px"><strong>Controls</strong>: Arrow keys / WASD or on-screen joystick. Mobile: tilt device.</div>
+    </div>
+    <div id="joystick"><div id="stick"></div></div>
+
+    <script type="module">
+        import * as THREE from 'https://unpkg.com/three@0.152.2/build/three.module.js';
+        import { OrbitControls } from 'https://unpkg.com/three@0.152.2/examples/jsm/controls/OrbitControls.js';
+        import * as CANNON from 'https://cdn.jsdelivr.net/npm/cannon-es@0.20.0/dist/cannon-es.js';
+
+        // --- Basic scene and physics world ---
+        const container = document.getElementById('container');
+        const scene = new THREE.Scene();
+        scene.background = new THREE.Color(0x0b1020);
+
+        const renderer = new THREE.WebGLRenderer({ antialias: true });
+        renderer.setPixelRatio(window.devicePixelRatio);
+        renderer.setSize(window.innerWidth, window.innerHeight);
+        container.appendChild(renderer.domElement);
+
+        const camera = new THREE.PerspectiveCamera(50, window.innerWidth / window.innerHeight, 0.1, 200);
+        camera.position.set(0, 20, 30);
+
+        const controls = new OrbitControls(camera, renderer.domElement);
+        controls.target.set(0, 3, 0);
+        controls.update();
+
+        const hemi = new THREE.HemisphereLight(0xffffff, 0x222233, 0.9);
+        scene.add(hemi);
+        const dir = new THREE.DirectionalLight(0xffffff, 0.6);
+        dir.position.set(10, 20, 10);
+        scene.add(dir);
+
+        // physics
+        const world = new CANNON.World({ gravity: new CANNON.Vec3(0, -9.82, 0) });
+        world.broadphase = new CANNON.SAPBroadphase(world);
+        world.allowSleep = true;
+
+        // Materials & contact
+        const defaultMaterial = new CANNON.Material('default');
+        const defaultContact = new CANNON.ContactMaterial(defaultMaterial, defaultMaterial, { friction: 0.4, restitution: 0.1 });
+        world.addContactMaterial(defaultContact);
+
+        // Plane that will be tilted (large thin box)
+        const planeSize = 60;
+        const planeGeo = new THREE.BoxGeometry(planeSize, 1, planeSize);
+        const planeMat = new THREE.MeshStandardMaterial({ color: 0x223344, metalness: 0.1, roughness: 0.8 });
+        const planeMesh = new THREE.Mesh(planeGeo, planeMat);
+        planeMesh.position.y = 0;
+        scene.add(planeMesh);
+
+        const planeBody = new CANNON.Body({ mass: 0, shape: new CANNON.Box(new CANNON.Vec3(planeSize / 2, 0.5, planeSize / 2)), material: defaultMaterial, position: new CANNON.Vec3(0, 0, 0) });
+        world.addBody(planeBody);
+
+        // Border walls
+        function addWall(x, z, w, h, rotY = 0) {
+            const g = new THREE.BoxGeometry(w, h, 1);
+            const m = new THREE.MeshStandardMaterial({ color: 0x111a22 });
+            const mesh = new THREE.Mesh(g, m);
+            mesh.position.set(x, h / 2, z);
+            mesh.rotation.y = rotY;
+            scene.add(mesh);
+            const b = new CANNON.Body({ mass: 0, shape: new CANNON.Box(new CANNON.Vec3(w / 2, h / 2, 0.5)), position: new CANNON.Vec3(x, h / 2, z) });
+            world.addBody(b);
+            return { mesh, body: b };
+        }
+
+        addWall(0, -planeSize / 2 - 0.5, planeSize, 4); // back wall
+        addWall(0, planeSize / 2 + 0.5, planeSize, 4); // front wall
+        addWall(-planeSize / 2 - 0.5, 0, 1, 4, Math.PI / 2); // left
+        addWall(planeSize / 2 + 0.5, 0, 1, 4, Math.PI / 2); // right
+
+        // Ball
+        const ballRadius = 1;
+        const ballGeo = new THREE.SphereGeometry(ballRadius, 32, 24);
+        const ballMat = new THREE.MeshStandardMaterial({ color: 0xff7755, metalness: 0.2, roughness: 0.4 });
+        const ballMesh = new THREE.Mesh(ballGeo, ballMat);
+        scene.add(ballMesh);
+        const ballBody = new CANNON.Body({ mass: 3, shape: new CANNON.Sphere(ballRadius), position: new CANNON.Vec3(0, 4, 10), material: defaultMaterial });
+        ballBody.angularDamping = 0.4;
+        world.addBody(ballBody);
+
+        // Movable boxes
+        const dynamicBodies = [ballBody];
+        function addBox(x, y, z, sx = 2, sy = 2, sz = 2, mass = 2) {
+            const geo = new THREE.BoxGeometry(sx, sy, sz);
+            const mat = new THREE.MeshStandardMaterial({ color: 0x7aa2ff });
+            const m = new THREE.Mesh(geo, mat);
+            m.position.set(x, y, z);
+            scene.add(m);
+            const box = new CANNON.Body({ mass, shape: new CANNON.Box(new CANNON.Vec3(sx / 2, sy / 2, sz / 2)), position: new CANNON.Vec3(x, y, z), material: defaultMaterial });
+            world.addBody(box);
+            dynamicBodies.push(box);
+            return { mesh: m, body: box };
+        }
+
+        addBox(-6, 2, 2, 3, 3, 3, 6);
+        addBox(6, 2, -6, 2, 2, 2, 2);
+
+        // Movable gate that opens when plate is pressed
+        const gateGeo = new THREE.BoxGeometry(8, 6, 1);
+        const gateMat = new THREE.MeshStandardMaterial({ color: 0x33bb77 });
+        const gateMesh = new THREE.Mesh(gateGeo, gateMat);
+        gateMesh.position.set(0, 3, -14);
+        scene.add(gateMesh);
+        const gateBody = new CANNON.Body({ mass: 0, shape: new CANNON.Box(new CANNON.Vec3(4, 3, 0.5)), position: new CANNON.Vec3(0, 3, -14) });
+        world.addBody(gateBody);
+
+        let gateOpen = false;
+
+        // Weight plate (switch) - detect bodies overlapping
+        function addWeightPlate(x, z, w = 6, d = 6) {
+            const g = new THREE.BoxGeometry(w, 0.4, d);
+            const m = new THREE.Mesh(g, new THREE.MeshStandardMaterial({ color: 0x665544 }));
+            m.position.set(x, 0.2, z);
+            scene.add(m);
+            const plate = { mesh: m, x, z, w, d };
+            return plate;
+        }
+
+        const plates = [];
+        plates.push(addWeightPlate(-12, -8));
+        plates.push(addWeightPlate(12, 8));
+
+        // Coins (hovering collectibles)
+        const coins = [];
+        function addCoin(x, y, z) {
+            const g = new THREE.TorusGeometry(0.7, 0.25, 16, 32);
+            const m = new THREE.Mesh(g, new THREE.MeshStandardMaterial({ color: 0xffd86b, metalness: 0.8, roughness: 0.2 }));
+            m.position.set(x, y, z);
+            m.rotation.x = Math.PI / 2;
+            scene.add(m);
+            coins.push({ mesh: m, collected: false, baseY: y, phase: Math.random() * Math.PI * 2 });
+        }
+
+        addCoin(0, 3, -10);
+        addCoin(-8, 3, -2);
+        addCoin(8, 3, 6);
+        addCoin(14, 5, -10);
+
+        document.getElementById('coinTotal').innerText = coins.length.toString();
+
+        // helpers
+        function worldToThree(v) { return new THREE.Vector3(v.x, v.y, v.z); }
+
+        // Input handling: joystick, keyboard, device tilt
+        const joystick = document.getElementById('joystick');
+        const stick = document.getElementById('stick');
+        let joystickVector = { x: 0, y: 0 };
+        let pointerId = null;
+
+        function clamp(n, a, b) { return Math.max(a, Math.min(b, n)); }
+
+        joystick.addEventListener('pointerdown', (e) => { joystick.setPointerCapture(e.pointerId); pointerId = e.pointerId; onMove(e); });
+        joystick.addEventListener('pointermove', (e) => { if (pointerId === e.pointerId) onMove(e); });
+        joystick.addEventListener('pointerup', (e) => { joystick.releasePointerCapture(e.pointerId); pointerId = null; joystickVector = { x: 0, y: 0 }; stick.style.transform = `translate(0px,0px)`; });
+
+        function onMove(e) {
+            const r = joystick.getBoundingClientRect();
+            const cx = r.left + r.width / 2;
+            const cy = r.top + r.height / 2;
+            const dx = clamp((e.clientX - cx) / (r.width / 2), -1, 1);
+            const dy = clamp((e.clientY - cy) / (r.height / 2), -1, 1);
+            joystickVector = { x: dx, y: dy };
+            stick.style.transform = `translate(${dx * 36}px,${dy * 36}px)`;
+        }
+
+        const keys = { ArrowUp:0, ArrowDown:0, ArrowLeft:0, ArrowRight:0, w:0,a:0,s:0,d:0 };
+        window.addEventListener('keydown', (e)=>{ if (e.key in keys) keys[e.key]=1; });
+        window.addEventListener('keyup', (e)=>{ if (e.key in keys) keys[e.key]=0; });
+
+        window.addEventListener('deviceorientation', (e)=>{
+            if (e.beta==null) return;
+            // gamma (left-right), beta (front-back)
+            const tiltX = clamp(e.gamma / 30, -1, 1); // left-right
+            const tiltY = clamp(e.beta / 30, -1, 1); // front-back
+            joystickVector.x = tiltX; joystickVector.y = tiltY;
+            stick.style.transform = `translate(${tiltX * 36}px,${tiltY * 36}px)`;
+        });
+
+        // state & rewind history for ball
+        const history = [];
+        const HISTORY_MAX = 180; // 3s at 60fps
+        let isRewinding = false;
+
+        // slow motion flag
+        let globalSlow = false;
+
+        // reset
+        const resetBtn = document.getElementById('reset');
+        resetBtn.addEventListener('click', resetLevel);
+
+        document.getElementById('slowmo').addEventListener('click', ()=>{ globalSlow = !globalSlow; });
+
+        function resetLevel(){
+            // reset ball
+            ballBody.position.set(0,4,10);
+            ballBody.velocity.set(0,0,0);
+            ballBody.angularVelocity.set(0,0,0);
+            ballBody.quaternion.set(0,0,0,1);
+            // reset gates and coins
+            gateOpen = false;
+            gateBody.position.set(0,3,-14);
+            gateBody.quaternion.set(0,0,0,1);
+            gateBody.velocity.set(0,0,0);
+            coins.forEach(c=>{ c.collected=false; c.mesh.visible=true; });
+            document.getElementById('coinCount').innerText = '0';
+        }
+
+        // collision helper: simple AABB check in plane-space
+        function plateWeight(plate){
+            let total = 0;
+            dynamicBodies.forEach(b => {
+                const p = b.position;
+                // project relative to plate center (plate at y~0)
+                if (p.x > plate.x - plate.w/2 && p.x < plate.x + plate.w/2 && p.z > plate.z - plate.d/2 && p.z < plate.z + plate.d/2 && p.y < 4) {
+                    total += b.mass;
+                }
+            });
+            return total;
+        }
+
+        // hook into world step for collecting coins
+        function checkCoins(){
+            const pos = ballBody.position;
+            coins.forEach(c=>{
+                if (c.collected) return;
+                const dx = pos.x - c.mesh.position.x;
+                const dy = pos.y - c.mesh.position.y;
+                const dz = pos.z - c.mesh.position.z;
+                const dist2 = dx*dx+dy*dy+dz*dz;
+                if (dist2 < 2.2*2.2) {
+                    c.collected = true;
+                    c.mesh.visible = false;
+                    const countEl = document.getElementById('coinCount');
+                    countEl.innerText = (parseInt(countEl.innerText)+1).toString();
+                }
+            });
+        }
+
+        // track history
+        function recordHistory(){
+            history.push({ p: ballBody.position.clone(), v: ballBody.velocity.clone(), q: ballBody.quaternion.clone() });
+            if (history.length > HISTORY_MAX) history.shift();
+        }
+
+        // slow-motion rewind: play back history visually, then restore to a safe spot
+        async function startRewind(){
+            if (isRewinding) return;
+            isRewinding = true;
+            // pick safe index where y>0.8
+            let safeIdx = history.length - 1;
+            for (let i = history.length - 1; i >= 0; i--) {
+                if (history[i].p.y > 0.8) { safeIdx = i; break; }
+            }
+            // play history backward from end to safeIdx
+            const playback = history.slice(safeIdx, history.length);
+            // pause physics
+            // store current velocities
+            const fps = 60;
+            for (let i = playback.length - 1; i >= 0; i--) {
+                const state = playback[i];
+                // render state
+                ballBody.position.copy(state.p);
+                ballBody.quaternion.copy(state.q);
+                ballMesh.position.copy(worldToThree(state.p));
+                ballMesh.quaternion.copy(state.q);
+                await new Promise(r => setTimeout(r, 12)); // ~fast rewind visuals
+            }
+            // restore to safe state
+            const safe = playback[0];
+            ballBody.position.copy(safe.p);
+            ballBody.velocity.copy(safe.v.scale(0.3));
+            ballBody.quaternion.copy(safe.q);
+            ballMesh.position.copy(worldToThree(safe.p));
+            isRewinding = false;
+        }
+
+        // main loop
+        let lastTime = performance.now();
+        function animate(t){
+            requestAnimationFrame(animate);
+            const dt = Math.min(1/30, (t - lastTime) / 1000);
+            lastTime = t;
+
+            // input -> tilt plane
+            let inputX = joystickVector.x;
+            let inputY = joystickVector.y;
+            // keyboard influence
+            inputX += (keys.ArrowLeft || keys.a) ? -1 : 0;
+            inputX += (keys.ArrowRight || keys.d) ? 1 : 0;
+            inputY += (keys.ArrowUp || keys.w) ? -1 : 0;
+            inputY += (keys.ArrowDown || keys.s) ? 1 : 0;
+            inputX = clamp(inputX, -1, 1);
+            inputY = clamp(inputY, -1, 1);
+
+            // apply tilt to plane body
+            const maxTilt = 0.35; // radians
+            const targetRotX = inputY * maxTilt; // tilt forward/back
+            const targetRotZ = -inputX * maxTilt; // tilt left/right
+            // smooth lerp of rotation
+            const q = new CANNON.Quaternion();
+            q.setFromEuler(targetRotX, 0, targetRotZ, 'XYZ');
+            planeBody.quaternion.slerp(q, 0.08);
+            planeMesh.position.copy(worldToThree(planeBody.position));
+            planeMesh.quaternion.copy(planeBody.quaternion);
+
+            // step physics
+            const stepDT = globalSlow ? dt * 0.2 : dt;
+            world.step(1/60, stepDT, 3);
+
+            // update meshes
+            ballMesh.position.copy(worldToThree(ballBody.position));
+            ballMesh.quaternion.copy(ballBody.quaternion);
+
+            // update boxes
+            world.bodies.forEach(b => {
+                if (b === planeBody || b === ballBody || b === gateBody) return;
+                if (b.shapes && b.shapes.length) {
+                    // find matching mesh by position match (simple approach)
+                }
+            });
+
+            // animate coins
+            const time = t / 1000;
+            coins.forEach(c => {
+                if (c.collected) return;
+                c.mesh.position.y = c.baseY + Math.sin(time * 2 + c.phase) * 0.6;
+                c.mesh.rotation.z += 0.02;
+            });
+
+            // check plates and open gates
+            plates.forEach((p, idx) => {
+                const w = plateWeight(p);
+                if (w > 4) {
+                    p.mesh.material.color.setHex(0x44aa66);
+                    if (!gateOpen) {
+                        gateOpen = true;
+                    }
+                } else {
+                    p.mesh.material.color.setHex(0x665544);
+                }
+            });
+            // gate animation
+            if (gateOpen) {
+                gateMesh.position.y = THREE.MathUtils.lerp(gateMesh.position.y, 12, 0.06);
+                gateBody.position.set(gateMesh.position.x, gateMesh.position.y, gateMesh.position.z);
+            } else {
+                gateMesh.position.y = THREE.MathUtils.lerp(gateMesh.position.y, 3, 0.06);
+                gateBody.position.set(gateMesh.position.x, gateMesh.position.y, gateMesh.position.z);
+            }
+
+            // record history when ball is above plane
+            if (!isRewinding) recordHistory();
+
+            // check coins
+            checkCoins();
+
+            // detect fall off
+            if (ballBody.position.y < -6 && !isRewinding) {
+                // trigger rewind
+                startRewind();
+            }
+
+            renderer.render(scene, camera);
+        }
+
+        // initial camera framing
+        animate(performance.now());
+
+        // handle resize
+        window.addEventListener('resize', ()=>{ camera.aspect = window.innerWidth/window.innerHeight; camera.updateProjectionMatrix(); renderer.setSize(window.innerWidth, window.innerHeight); });
+
+        // done: small UX polish: clicking canvas recenters camera
+        renderer.domElement.addEventListener('dblclick', ()=>{ controls.reset(); });
+
+    </script>
+</body>
+</html>
+
+
