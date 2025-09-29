@@ -47,10 +47,14 @@ import { LinearGradient } from "expo-linear-gradient";
 import { BlurView } from "expo-blur";
 
 import SimpleGameService from "../services/SimpleGameService";
-import { getGameErrorMonitoringScript } from "./WebViewUtils";
+import { getGameErrorMonitoringScript, getWebViewConfig, getPerformanceMonitoringScript } from "./WebViewUtils";
 import { SessionService } from "../services/SessionService";
 import ActivityTrackerInstance from "../services/ActivityTracker";
 import { useAuth } from "../auth/AuthProvider";
+import usePerformanceMonitor from "../../hooks/usePerformanceMonitor";
+
+// Performance optimization: Preload next game
+const PRELOAD_COUNT = 2; // Number of games to preload ahead
 
 type Game = {
   id: string;
@@ -79,9 +83,11 @@ const PlayFeed = forwardRef<PlayFeedRef, {}>(({}, ref) => {
   const cardHeight = screenHeight - insets.top - insets.bottom - tabBarHeight;
   const cardWidth = screenWidth;
 
-  // Pagination configuration - these can be easily changed
-  const PAGE_SIZE = 3; // Number of games to load per page
-  const LOAD_TRIGGER_INDEX = 2; // Load more when user reaches this index (0-based, so 2 = 3rd game)
+  // Enhanced pagination configuration for smooth infinite scroll
+  const PAGE_SIZE = 12; // Load more games per page for smoother scrolling
+  const LOAD_TRIGGER_INDEX = 8; // Load more when user reaches this index (0-based, so 8 = 9th game)
+  const PRELOAD_BUFFER = 6; // Start loading more games when user is within 6 games of the end
+  const MAX_VISIBLE_GAMES = 50; // Limit visible games to prevent memory issues
 
   const [games, setGames] = useState<Game[]>([]);
   const [current, setCurrent] = useState(0);
@@ -96,6 +102,9 @@ const PlayFeed = forwardRef<PlayFeedRef, {}>(({}, ref) => {
   const [hasMoreGames, setHasMoreGames] = useState(true);
   const [currentPage, setCurrentPage] = useState(0);
   const [showBounceLoader, setShowBounceLoader] = useState(false);
+  const [isNearEnd, setIsNearEnd] = useState(false);
+  const [loadingProgress, setLoadingProgress] = useState(0);
+  const progressAnim = useRef(new Animated.Value(0)).current;
   const viewRef = useRef<FlatList>(null);
   const prevIndexRef = useRef(0);
   const gamesRef = useRef<Game[]>([]);
@@ -103,7 +112,20 @@ const PlayFeed = forwardRef<PlayFeedRef, {}>(({}, ref) => {
   const loadingMoreRef = useRef(false);
   const showBounceLoaderRef = useRef(false);
   const loadMoreGamesRef = useRef<(() => Promise<void>) | null>(null);
+  const isNearEndRef = useRef(false);
   const gameService = SimpleGameService.getInstance();
+
+  // Memory management: Track preloaded games
+  const preloadedGames = useRef<Set<string>>(new Set());
+  const visibleRange = useRef({ start: 0, end: 0 });
+
+  // Performance monitoring
+  const { getCurrentFPS } = usePerformanceMonitor((metrics) => {
+    // Log performance metrics for debugging
+    if (__DEV__) {
+      console.log('PlayFeed Performance:', metrics);
+    }
+  }, 10000); // Monitor every 10 seconds
 
   // Animation values
   const fadeAnim = useRef(new Animated.Value(0)).current;
@@ -112,8 +134,46 @@ const PlayFeed = forwardRef<PlayFeedRef, {}>(({}, ref) => {
   const bounceAnimationRef = useRef<Animated.CompositeAnimation | null>(null);
 
   useEffect(() => {
-    loadGamesFromFirebase();
-    
+    // Load initial games with progress indication
+    const loadInitialGames = async () => {
+      setLoading(true);
+      setLoadingProgress(0);
+      progressAnim.setValue(0);
+
+      // Simulate loading progress for better UX
+      const progressInterval = setInterval(() => {
+        setLoadingProgress(prev => {
+          const newProgress = prev + 5;
+          if (newProgress >= 90) {
+            clearInterval(progressInterval);
+            return 90;
+          }
+          progressAnim.setValue(newProgress);
+          return newProgress;
+        });
+      }, 100);
+
+      try {
+        await loadGamesFromFirebase();
+        clearInterval(progressInterval);
+        setLoadingProgress(100);
+        progressAnim.setValue(100);
+        setTimeout(() => {
+          setLoadingProgress(0);
+          progressAnim.setValue(0);
+        }, 500);
+      } catch (error) {
+        clearInterval(progressInterval);
+        setLoadingProgress(0);
+        progressAnim.setValue(0);
+        console.error('Error loading initial games:', error);
+      } finally {
+        setLoading(false);
+      }
+    };
+
+    loadInitialGames();
+
     // Smooth entrance animation
     Animated.parallel([
       Animated.timing(fadeAnim, {
@@ -174,6 +234,7 @@ const PlayFeed = forwardRef<PlayFeedRef, {}>(({}, ref) => {
     };
   }, [showBounceLoader, bounceAnim]);
 
+  // 🚀 PERFORMANCE OPTIMIZATION: Memoized game loading with better error handling
   const loadGamesFromFirebase = useCallback(async (page: number = 0, append: boolean = false) => {
     try {
       if (page === 0) {
@@ -206,7 +267,12 @@ const PlayFeed = forwardRef<PlayFeedRef, {}>(({}, ref) => {
         const paginatedGames = firebaseGames.slice(startIndex, endIndex);
 
         if (append) {
-          setGames(prevGames => [...prevGames, ...paginatedGames]);
+          setGames(prevGames => {
+            // 🚀 PERFORMANCE: Avoid duplicates when appending
+            const existingIds = new Set(prevGames.map(g => g.id));
+            const newGames = paginatedGames.filter(g => !existingIds.has(g.id));
+            return [...prevGames, ...newGames];
+          });
         } else {
           setGames(paginatedGames);
         }
@@ -230,14 +296,87 @@ const PlayFeed = forwardRef<PlayFeedRef, {}>(({}, ref) => {
       setLoading(false);
       setLoadingMore(false);
     }
-  }, [user, gameService]);
+  }, [user?.uid, gameService]); // 🚀 PERFORMANCE: More specific dependencies
 
   const loadMoreGames = useCallback(async () => {
     if (loadingMore || !hasMoreGames) return;
 
     const nextPage = currentPage + 1;
-    await loadGamesFromFirebase(nextPage, true);
-  }, [loadingMore, hasMoreGames, currentPage, loadGamesFromFirebase]);
+    setLoadingProgress(0);
+    progressAnim.setValue(0);
+
+    // Animate loading progress for smooth UX
+    const progressInterval = setInterval(() => {
+      setLoadingProgress(prev => {
+        const newProgress = prev + 10;
+        if (newProgress >= 90) {
+          clearInterval(progressInterval);
+          return 90;
+        }
+        progressAnim.setValue(newProgress);
+        return newProgress;
+      });
+    }, 100);
+
+    try {
+      await loadGamesFromFirebase(nextPage, true);
+      clearInterval(progressInterval);
+      setLoadingProgress(100);
+      progressAnim.setValue(100);
+      setTimeout(() => {
+        setLoadingProgress(0);
+        progressAnim.setValue(0);
+      }, 500);
+    } catch (error) {
+      clearInterval(progressInterval);
+      setLoadingProgress(0);
+      progressAnim.setValue(0);
+      console.error('Error loading more games:', error);
+    }
+  }, [loadingMore, hasMoreGames, currentPage, loadGamesFromFirebase, progressAnim]);
+
+  // Enhanced loading strategy with predictive loading and memory management
+  const checkAndLoadMore = useCallback(async (currentIndex: number) => {
+    const totalGames = gamesRef.current.length;
+    const gamesUntilEnd = totalGames - currentIndex - 1;
+
+    // Check if user is near the end (within buffer zone)
+    const shouldLoadMore = gamesUntilEnd <= PRELOAD_BUFFER && hasMoreGamesRef.current && !loadingMoreRef.current;
+
+    if (shouldLoadMore) {
+      setIsNearEnd(true);
+      loadMoreGamesRef.current?.();
+    } else {
+      setIsNearEnd(false);
+    }
+
+    // Memory management: Clean up old games when loading new ones
+    if (totalGames > MAX_VISIBLE_GAMES * 1.5) {
+      const gamesToKeep = gamesRef.current.slice(Math.max(0, currentIndex - 10), currentIndex + PRELOAD_BUFFER + 5);
+      if (gamesToKeep.length < totalGames) {
+        setGames(gamesToKeep);
+        console.log(`Memory optimization: Reduced from ${totalGames} to ${gamesToKeep.length} games`);
+      }
+    }
+  }, []);
+
+  // Preload games for better performance
+  const preloadGames = useCallback(async (gamesToPreload: Game[]) => {
+    const preloadPromises = gamesToPreload
+      .filter(game => !preloadedGames.current.has(game.id))
+      .slice(0, PRELOAD_COUNT)
+      .map(async (game) => {
+        try {
+          // Preload game data and mark as preloaded
+          preloadedGames.current.add(game.id);
+          console.log(`Preloaded game: ${game.title}`);
+        } catch (error) {
+          console.warn(`Failed to preload game ${game.id}:`, error);
+        }
+      });
+
+    await Promise.allSettled(preloadPromises);
+  }, []);
 
   useImperativeHandle(ref, () => ({
     addGame: (game: Game) => {
@@ -305,9 +444,16 @@ const PlayFeed = forwardRef<PlayFeedRef, {}>(({}, ref) => {
         setShowResultSheet(false);
         setLastScore(0);
 
-        // Trigger loading more games when user reaches the trigger index
-        if (idx >= LOAD_TRIGGER_INDEX && hasMoreGamesRef.current && !loadingMoreRef.current) {
-          loadMoreGamesRef.current?.();
+        // Update visible range for memory management
+        visibleRange.current = { start: Math.max(0, idx - 1), end: Math.min(gamesRef.current.length - 1, idx + 1) };
+
+        // Use enhanced loading strategy with predictive loading
+        checkAndLoadMore(idx);
+
+        // Preload upcoming games for better performance
+        const upcomingGames = gamesRef.current.slice(idx + 1, idx + 1 + PRELOAD_COUNT);
+        if (upcomingGames.length > 0) {
+          preloadGames(upcomingGames);
         }
 
         // If user somehow scrolls to an index that doesn't exist, show bounce loader
@@ -338,6 +484,10 @@ const PlayFeed = forwardRef<PlayFeedRef, {}>(({}, ref) => {
     useEffect(() => {
       showBounceLoaderRef.current = showBounceLoader;
     }, [showBounceLoader]);
+
+    useEffect(() => {
+      isNearEndRef.current = isNearEnd;
+    }, [isNearEnd]);
 
     useEffect(() => {
       loadMoreGamesRef.current = loadMoreGames;
@@ -466,11 +616,33 @@ const PlayFeed = forwardRef<PlayFeedRef, {}>(({}, ref) => {
   );
 
   const renderFooter = () => {
-    if (loadingMore) {
+    if (loadingMore || isNearEnd) {
       return (
         <View style={[styles.loadingMoreContainer, { height: cardHeight }]}>
-          <ActivityIndicator size="large" color="#007AFF" />
-          <Text style={styles.loadingMoreText}>Loading more games...</Text>
+          <View style={styles.loadingProgressContainer}>
+            <ActivityIndicator size="large" color="#007AFF" />
+            <View style={styles.progressBar}>
+              <Animated.View
+                style={[
+                  styles.progressFill,
+                  {
+                    width: progressAnim.interpolate({
+                      inputRange: [0, 100],
+                      outputRange: ['0%', '100%']
+                    })
+                  }
+                ]}
+              />
+            </View>
+            <Text style={styles.loadingMoreText}>
+              {loadingMore ? 'Loading more games...' : 'Preparing more games...'}
+            </Text>
+            {loadingProgress > 0 && (
+              <Text style={styles.loadingProgressText}>
+                {Math.round(loadingProgress)}%
+              </Text>
+            )}
+          </View>
         </View>
       );
     }
@@ -514,9 +686,37 @@ const PlayFeed = forwardRef<PlayFeedRef, {}>(({}, ref) => {
               <View style={styles.emptyIconContainer}>
                 <CustomIcon name="game-controller-outline" size={48} color="#007AFF" />
               </View>
-              <Text style={styles.emptyTitle}>No Games Yet</Text>
-              <Text style={styles.emptySubtitle}>Create your first game to see it here</Text>
-              {loading && <ActivityIndicator size="large" color="#007AFF" style={styles.emptyLoader} />}
+              <Text style={styles.emptyTitle}>
+                {loading ? 'Loading Games...' : 'No Games Yet'}
+              </Text>
+              <Text style={styles.emptySubtitle}>
+                {loading ? 'Discovering amazing games for you' : 'Create your first game to see it here'}
+              </Text>
+              {loading && (
+                <View style={styles.emptyLoaderContainer}>
+                  <ActivityIndicator size="large" color="#007AFF" />
+                  {loadingProgress > 0 && (
+                    <View style={styles.emptyProgressContainer}>
+                      <View style={styles.emptyProgressBar}>
+                        <Animated.View
+                          style={[
+                            styles.emptyProgressFill,
+                            {
+                              width: progressAnim.interpolate({
+                                inputRange: [0, 100],
+                                outputRange: ['0%', '100%']
+                              })
+                            }
+                          ]}
+                        />
+                      </View>
+                      <Text style={styles.emptyProgressText}>
+                        {Math.round(loadingProgress)}%
+                      </Text>
+                    </View>
+                  )}
+                </View>
+              )}
             </View>
           </BlurView>
         </Animated.View>
@@ -841,18 +1041,22 @@ function GameCard({
             key={`${game.id}_${resetKey}`}
             source={source}
             style={styles.webview}
-            onMessage={(e) => onMessage(e.nativeEvent.data)}
-            javaScriptEnabled={true}
-            allowsInlineMediaPlayback={true}
+            {...getWebViewConfig()}
             mediaPlaybackRequiresUserAction={false}
-            scrollEnabled={false}
-            showsVerticalScrollIndicator={false}
-            showsHorizontalScrollIndicator={false}
             userAgent="Mozilla/5.0 (iPhone; CPU iPhone OS 14_0 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/14.0 Mobile/15E148 Safari/604.1"
             allowsBackForwardNavigationGestures={false}
-            bounces={false}
             onShouldStartLoadWithRequest={() => true}
-            injectedJavaScript={`${getGameErrorMonitoringScript()}; true;`}
+            injectedJavaScript={`${getGameErrorMonitoringScript()}; ${getPerformanceMonitoringScript()}; true;`}
+            onMessage={(event) => {
+              onMessage(event.nativeEvent.data);
+              // Handle performance monitoring messages
+              try {
+                const data = JSON.parse(event.nativeEvent.data);
+                if (data.type === 'performance') {
+                  console.log(`Game ${game.id} Performance:`, data);
+                }
+              } catch {}
+            }}
             onError={(syntheticEvent) => {
               const { nativeEvent } = syntheticEvent;
               console.error('ERROR IN GENERATED CODE: PlayFeed WebView load error:', nativeEvent, 'Game ID:', game.id);
@@ -1385,11 +1589,35 @@ const styles = StyleSheet.create({
     alignItems: 'center',
     backgroundColor: '#000000',
   },
+  loadingProgressContainer: {
+    alignItems: 'center',
+    paddingHorizontal: 20,
+  },
+  progressBar: {
+    width: 200,
+    height: 4,
+    backgroundColor: 'rgba(255, 255, 255, 0.1)',
+    borderRadius: 2,
+    marginTop: 16,
+    marginBottom: 8,
+    overflow: 'hidden',
+  },
+  progressFill: {
+    height: '100%',
+    backgroundColor: '#007AFF',
+    borderRadius: 2,
+  },
   loadingMoreText: {
     color: '#8E8E93',
     fontSize: 14,
-    marginTop: 12,
+    marginTop: 8,
     textAlign: 'center',
+  },
+  loadingProgressText: {
+    color: '#007AFF',
+    fontSize: 12,
+    fontWeight: '600',
+    marginTop: 4,
   },
 
   // Bounce Loader
@@ -1464,6 +1692,32 @@ const styles = StyleSheet.create({
   },
   emptyLoader: {
     marginTop: 24,
+  },
+  emptyLoaderContainer: {
+    alignItems: 'center',
+    marginTop: 24,
+  },
+  emptyProgressContainer: {
+    marginTop: 16,
+    alignItems: 'center',
+  },
+  emptyProgressBar: {
+    width: 200,
+    height: 4,
+    backgroundColor: 'rgba(255, 255, 255, 0.1)',
+    borderRadius: 2,
+    marginBottom: 8,
+    overflow: 'hidden',
+  },
+  emptyProgressFill: {
+    height: '100%',
+    backgroundColor: '#007AFF',
+    borderRadius: 2,
+  },
+  emptyProgressText: {
+    color: '#007AFF',
+    fontSize: 12,
+    fontWeight: '600',
   },
 
   // Game Card

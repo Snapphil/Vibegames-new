@@ -115,7 +115,7 @@ export default function Calculator() {
         ].map((row, i) => (
           <View key={i} style={styles.row}>
             {row.map((btn) => (
-              <CalcButton key={btn.label} {...btn} />
+              <CalcButton key={btn.label} {...btn as BtnProps} />
             ))}
           </View>
         ))}

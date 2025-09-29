@@ -111,7 +111,7 @@ export function GenerationProvider({ children }: { children: React.ReactNode }) 
 
   useEffect(() => {
     let raf: number | null = null;
-    let timer: NodeJS.Timeout | null = null;
+    let timer: ReturnType<typeof setInterval> | null = null;
     if (state.status === "running") {
       const tick = () => dispatch({ type: "TICK", now: Date.now() });
       tick();

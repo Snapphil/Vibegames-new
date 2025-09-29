@@ -1,7 +1,10 @@
 // HTML Game Templates - Used as placeholders/examples for game publishing
 // These are not used in the feed directly, but can be used as starting points for game creation
 
-export const gameHTML_FlappyNeon = () => `<!DOCTYPE html>
+export const gameHTML_FlappyNeon = (topic?: string) => {
+  const safeTopic = (topic || '').replace(/`/g,'').replace(/</g,'&lt;').replace(/>/g,'&gt;');
+  const titleText = safeTopic ? safeTopic.slice(0,18) : 'Tap to Play';
+  return `<!DOCTYPE html>
 <html><head><meta charset="utf-8"/><meta name="viewport" content="width=device-width, initial-scale=1, user-scalable=no"/>
 <style>html,body{margin:0;height:100%;overflow:hidden;background:#0b0f19;color:#fff;font-family:Inter,system-ui,Arial}#c{position:fixed;inset:0}</style></head>
 <body><canvas id="c"></canvas>
@@ -15,10 +18,10 @@ let pipes=[], gap=170*DPR, speed=2.6*DPR, gravity=0.35*DPR, jump=-6.8*DPR, score
 let running=false, started=false; 
 function addPipe(){ const w=64*DPR, x=W + w; const top=Math.random()*(H*0.5 - 90*DPR) + 40*DPR; pipes.push({x,w,top,passed:false}); }
 for(let i=0;i<4;i++){ pipes.push({x:W + i*(W*0.5), w:64*DPR, top:H*0.35, passed:false}); }
-let last=0; function loop(t){ requestAnimationFrame(loop); const dt=(t-last)||16.67; last=t; x.clearRect(0,0,W,H);
+ let last=0; function loop(t){ requestAnimationFrame(loop); const dt=(t-last)||16.67; last=t; x.clearRect(0,0,W,H);
  // bg
- const g=x.createLinearGradient(0,0,0,H); g.addColorStop(0,'#0b0f19'); g.addColorStop(1,'#111827'); x.fillStyle=g; x.fillRect(0,0,W,H);
- if(!started){ x.fillStyle='rgba(0,0,0,0.35)'; x.fillRect(0,0,W,H); x.fillStyle='#fff'; x.font=DPR*26+'px Arial'; x.textAlign='center'; x.fillText('Tap to Play',W/2,H/2); return; }
+  const g=x.createLinearGradient(0,0,0,H); g.addColorStop(0,'#0b0f19'); g.addColorStop(1,'#111827'); x.fillStyle=g; x.fillRect(0,0,W,H);
+  if(!started){ x.fillStyle='rgba(0,0,0,0.35)'; x.fillRect(0,0,W,H); x.fillStyle='#fff'; x.font=DPR*26+'px Arial'; x.textAlign='center'; x.fillText('${titleText}',W/2,H/2); return; }
  if(!running) return;
  bird.vy += gravity*(dt/16.67); bird.y += bird.vy;
  for(const p of pipes){ p.x -= speed*(dt/16.67); }
@@ -41,8 +44,12 @@ function end(){ running=false; RNW.postMessage(JSON.stringify({type:'gameEnd', s
 addEventListener('touchstart',tap,{passive:true}); addEventListener('mousedown',tap);
 requestAnimationFrame(loop);
 </script></body></html>`;
+};
 
-export const gameHTML_SwipeSnake = () => `<!DOCTYPE html>
+export const gameHTML_SwipeSnake = (topic?: string) => {
+  const safeTopic = (topic || '').replace(/`/g,'').replace(/</g,'&lt;').replace(/>/g,'&gt;');
+  const banner = safeTopic ? safeTopic.slice(0,18) : 'Swipe to Play';
+  return `<!DOCTYPE html>
 <html><head><meta charset="utf-8"/><meta name="viewport" content="width=device-width, initial-scale=1, user-scalable=no"/>
 <style>html,body{margin:0;height:100%;overflow:hidden;background:#0b0f19;color:#fff;font-family:Inter,system-ui,Arial}#c{position:fixed;inset:0}</style></head>
 <body><canvas id="c"></canvas>
@@ -67,7 +74,7 @@ function tick(){ const head={x:(snake[0].x+dir.x+cols())%cols(), y:(snake[0].y+d
   else snake.pop();
 }
 let last=0; function loop(t){ requestAnimationFrame(loop); const dt=t-last; last=t; g.clearRect(0,0,W,H);
-  if(!started){ g.fillStyle='rgba(0,0,0,0.35)'; g.fillRect(0,0,W,H); g.fillStyle='#fff'; g.font=DPR*26+'px Arial'; g.textAlign='center'; g.fillText('Swipe to Play',W/2,H/2); return; }
+  if(!started){ g.fillStyle='rgba(0,0,0,0.35)'; g.fillRect(0,0,W,H); g.fillStyle='#fff'; g.font=DPR*26+'px Arial'; g.textAlign='center'; g.fillText('${banner}',W/2,H/2); return; }
   if(!alive){ return; }
   acc+=dt; if(acc>step){ acc=0; tick(); }
   g.fillStyle='#0b0f19'; g.fillRect(0,0,W,H);
@@ -76,8 +83,12 @@ let last=0; function loop(t){ requestAnimationFrame(loop); const dt=t-last; last
 }
 requestAnimationFrame(loop);
 </script></body></html>`;
+};
 
-export const gameHTML_ThreeRunner = () => `<!DOCTYPE html>
+export const gameHTML_ThreeRunner = (topic?: string) => {
+  const safeTopic = (topic || '').replace(/`/g,'').replace(/</g,'&lt;').replace(/>/g,'&gt;');
+  const bannerText = safeTopic ? safeTopic.slice(0,32) : 'Tap to Play';
+  return `<!DOCTYPE html>
 <html><head><meta charset="utf-8"/><meta name="viewport" content="width=device-width, initial-scale=1, user-scalable=no"/>
 <style>html,body{margin:0;height:100%;overflow:hidden;background:#0b0f19}</style>
 <script src="https://unpkg.com/three@0.152.2/build/three.min.js"></script></head>
@@ -96,7 +107,8 @@ const obstacles=[]; function addObs(z){ const m=new THREE.Mesh(new THREE.BoxGeom
 for(let i=6;i<=60;i+=6){ addObs(-i); }
 let speed=0.12; let running=false, started=false, score=0;
 function reset(){ for(const o of obstacles){ scene.remove(o.m);} obstacles.length=0; for(let i=6;i<=60;i+=6){ addObs(-i);} player.position.set(0,0.3,0); vy=0; speed=0.12; score=0; }
-function start(){ if(!started){ started=true; running=true; RNW.postMessage(JSON.stringify({type:'score', score})); } }
+function start(){ if(!started){ started=true; running=true; RNW.postMessage(JSON.stringify({type:'score', score})); const banner=document.getElementById('title'); if(banner){ banner.remove(); } } }
+document.body.insertAdjacentHTML('afterbegin','<div id="title" style="position:fixed;top:40px;left:50%;transform:translateX(-50%);color:#fff;font-family:Inter,system-ui,Arial;font-size:20px;background:rgba(0,0,0,0.5);padding:12px 24px;border-radius:16px;border:1px solid rgba(255,255,255,0.2)">'+bannerText+'</div>');
 addEventListener('touchstart',()=>{ if(!started){ start(); } else if(running && player.position.y<=0.31){ vy=jump; } },{passive:true});
 addEventListener('mousedown',()=>{ if(!started){ start(); } else if(running && player.position.y<=0.31){ vy=jump; } });
 function loop(){ requestAnimationFrame(loop);
@@ -114,16 +126,20 @@ loop();
 addEventListener('resize',()=>{ W=innerWidth; H=innerHeight; camera.aspect=W/H; camera.updateProjectionMatrix(); renderer.setSize(W,H); });
 </script>
 </body></html>`;
+};
 
 // Simple HTML placeholder for new games
-export const gameHTML_Placeholder = () => `<!DOCTYPE html>
+export const gameHTML_Placeholder = (topic?: string) => {
+  const safeTopic = (topic || 'Your Game Here').replace(/`/g,'').replace(/</g,'&lt;').replace(/>/g,'&gt;').slice(0,26);
+  return `<!DOCTYPE html>
 <html><head><meta charset="utf-8"/><meta name="viewport" content="width=device-width, initial-scale=1, user-scalable=no"/>
 <style>html,body{margin:0;height:100%;overflow:hidden;background:#0b0f19;color:#fff;font-family:Inter,system-ui,Arial;display:flex;align-items:center;justify-content:center;flex-direction:column</style></head>
 <body>
-  <h1>Your Game Here</h1>
-  <p>Replace this HTML with your game code</p>
+  <h1>${safeTopic}</h1>
+  <p>Describe controls or gameplay in a sentence.</p>
   <button onclick="alert('Game interaction!')">Click me!</button>
 </body></html>`;
+};
 
 // Add default export for Expo Router
 export default {

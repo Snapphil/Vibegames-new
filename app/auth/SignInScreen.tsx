@@ -150,116 +150,135 @@ export default function SignInScreen() {
       case 0:
         return (
           <View style={styles.stepContainer}>
-            <View style={styles.logoContainer}>
-              <BlurView intensity={45} tint="dark" style={styles.logoGlass}>
-                <View style={styles.logoInner}>
-                  <Text style={styles.logoText}>V</Text>
-                </View>
+            <View style={styles.heroCard}>
+              <LinearGradient
+                colors={["rgba(10,132,255,0.24)", "rgba(48,209,88,0.12)", "rgba(0,0,0,0)"]}
+                start={{ x: 0, y: 0 }}
+                end={{ x: 1, y: 1 }}
+                style={styles.heroAccent}
+              />
+              <BlurView intensity={50} tint="dark" style={styles.heroGlass}>
+                <LinearGradient
+                  colors={["rgba(255,255,255,0.08)", "rgba(255,255,255,0)"]}
+                  start={{ x: 0.25, y: 0 }}
+                  end={{ x: 1, y: 1 }}
+                  style={styles.heroGlassInner}
+                >
+                  <View style={styles.heroContent}>
+                    <View style={styles.logoContainer}>
+                      <BlurView intensity={45} tint="dark" style={styles.logoGlass}>
+                        <View style={styles.logoInner}>
+                          <Text style={styles.logoText}>V</Text>
+                        </View>
+                      </BlurView>
+                    </View>
+
+                    <Text style={styles.title}>Welcome to{'\n'}VibeGames</Text>
+                    <Text style={styles.subtitle}>
+                      Create and play amazing games{'\n'}with friends worldwide
+                    </Text>
+
+                    <View style={styles.buttonGroup}>
+                      <Pressable
+                        onPress={() => {
+                          setIsSignUp(false);
+                          Keyboard.dismiss();
+                          goToStep(1, 'forward');
+                        }}
+                        disabled={isTransitioning}
+                        hitSlop={10}
+                        accessibilityRole="button"
+                        style={({ pressed }) => [pressed && styles.pressed]}
+                      >
+                        <LinearGradient
+                          colors={[PALETTE.accentPrimary, '#0A7AFF']}
+                          start={{ x: 0, y: 0 }}
+                          end={{ x: 1, y: 1 }}
+                          style={styles.primaryButton}
+                        >
+                          <Text
+                            style={styles.ctaText}
+                            numberOfLines={1}
+                            adjustsFontSizeToFit
+                            maxFontSizeMultiplier={1.2}
+                          >
+                            LOGIN
+                          </Text>
+                        </LinearGradient>
+                      </Pressable>
+
+                      <Pressable
+                        onPress={() => {
+                          setIsSignUp(true);
+                          Keyboard.dismiss();
+                          goToStep(1, 'forward');
+                        }}
+                        disabled={isTransitioning}
+                        hitSlop={10}
+                        accessibilityRole="button"
+                        style={({ pressed }) => [styles.secondaryButton, pressed && styles.pressed]}
+                      >
+                        <BlurView intensity={30} tint="dark" style={styles.blurButton}>
+                          <Text
+                            style={styles.secondaryButtonText}
+                            numberOfLines={1}
+                            adjustsFontSizeToFit
+                            maxFontSizeMultiplier={1.2}
+                          >
+                            SIGN UP
+                          </Text>
+                        </BlurView>
+                      </Pressable>
+
+                      <Pressable
+                        onPress={() => setShowAdmin(!showAdmin)}
+                        hitSlop={10}
+                        accessibilityRole="button"
+                        style={styles.adminToggle}
+                      >
+                        <Text style={styles.adminToggleText}>Admin Access →</Text>
+                      </Pressable>
+                    </View>
+
+                    {showAdmin && (
+                      <View style={styles.adminSection}>
+                        <BlurView intensity={35} tint="dark" style={styles.adminBlur}>
+                          <TextInput
+                            style={styles.adminInput}
+                            placeholder="Admin passcode"
+                            placeholderTextColor={PALETTE.textSecondary}
+                            value={adminPasscode}
+                            onChangeText={setAdminPasscode}
+                            secureTextEntry
+                            returnKeyType="done"
+                          />
+                          <Pressable
+                            onPress={handleAdminSignIn}
+                            disabled={loading}
+                            hitSlop={10}
+                            accessibilityRole="button"
+                            style={({ pressed }) => pressed && styles.pressed}
+                          >
+                            <LinearGradient
+                              colors={[PALETTE.accentPrimary, '#0A7AFF']}
+                              start={{ x: 0, y: 0 }}
+                              end={{ x: 1, y: 1 }}
+                              style={styles.adminButton}
+                            >
+                              {loading ? (
+                                <ActivityIndicator color={PALETTE.textPrimary} />
+                              ) : (
+                                <Text style={styles.adminButtonText}>ADMIN SIGN IN</Text>
+                              )}
+                            </LinearGradient>
+                          </Pressable>
+                        </BlurView>
+                      </View>
+                    )}
+                  </View>
+                </LinearGradient>
               </BlurView>
             </View>
-
-            <Text style={styles.title}>Welcome to{'\n'}VibeGames</Text>
-            <Text style={styles.subtitle}>
-              Create and play amazing games{'\n'}with friends worldwide
-            </Text>
-
-            <View style={styles.buttonGroup}>
-              <Pressable
-                onPress={() => {
-                  setIsSignUp(false);
-                  Keyboard.dismiss();
-                  goToStep(1, 'forward');
-                }}
-                disabled={isTransitioning}
-                hitSlop={10}
-                accessibilityRole="button"
-                style={({ pressed }) => [pressed && styles.pressed]}
-              >
-                <LinearGradient
-                  colors={[PALETTE.accentPrimary, PALETTE.accentPrimary]}
-                  start={{ x: 0, y: 0 }}
-                  end={{ x: 1, y: 1 }}
-                  style={styles.primaryButton}
-                >
-                  <Text
-                    style={styles.ctaText}
-                    numberOfLines={1}
-                    adjustsFontSizeToFit
-                    maxFontSizeMultiplier={1.2}
-                  >
-                    LOGIN
-                  </Text>
-                </LinearGradient>
-              </Pressable>
-
-              <Pressable
-                onPress={() => {
-                  setIsSignUp(true);
-                  Keyboard.dismiss();
-                  goToStep(1, 'forward');
-                }}
-                disabled={isTransitioning}
-                hitSlop={10}
-                accessibilityRole="button"
-                style={({ pressed }) => [styles.secondaryButton, pressed && styles.pressed]}
-              >
-                <BlurView intensity={30} tint="dark" style={styles.blurButton}>
-                  <Text
-                    style={styles.secondaryButtonText}
-                    numberOfLines={1}
-                    adjustsFontSizeToFit
-                    maxFontSizeMultiplier={1.2}
-                  >
-                    SIGN UP
-                  </Text>
-                </BlurView>
-              </Pressable>
-
-              <Pressable
-                onPress={() => setShowAdmin(!showAdmin)}
-                hitSlop={10}
-                accessibilityRole="button"
-                style={styles.adminToggle}
-              >
-                <Text style={styles.adminToggleText}>Admin Access →</Text>
-              </Pressable>
-            </View>
-
-            {showAdmin && (
-              <View style={styles.adminSection}>
-                <BlurView intensity={35} tint="dark" style={styles.adminBlur}>
-                  <TextInput
-                    style={styles.adminInput}
-                    placeholder="Admin passcode"
-                    placeholderTextColor={PALETTE.textSecondary}
-                    value={adminPasscode}
-                    onChangeText={setAdminPasscode}
-                    secureTextEntry
-                    returnKeyType="done"
-                  />
-                  <Pressable
-                    onPress={handleAdminSignIn}
-                    disabled={loading}
-                    hitSlop={10}
-                    accessibilityRole="button"
-                    style={({ pressed }) => pressed && styles.pressed}
-                  >
-                    <LinearGradient
-                      colors={[PALETTE.accentPrimary, PALETTE.accentPrimary]}
-                      start={{ x: 0, y: 0 }}
-                      end={{ x: 1, y: 1 }}
-                      style={styles.adminButton}
-                    >
-                      {loading ? (
-                        <ActivityIndicator color={PALETTE.textPrimary} />
-                      ) : (
-                        <Text style={styles.adminButtonText}>ADMIN SIGN IN</Text>
-                      )}
-                    </LinearGradient>
-                  </Pressable>
-                </BlurView>
-              </View>
-            )}
           </View>
         );
 
@@ -524,6 +543,46 @@ const styles = StyleSheet.create({
     width: '100%',
   },
 
+  heroCard: {
+    width: '100%',
+    maxWidth: 420,
+    borderRadius: 26,
+    overflow: 'hidden',
+    backgroundColor: 'rgba(22, 22, 28, 0.9)',
+    borderWidth: StyleSheet.hairlineWidth,
+    borderColor: 'rgba(255,255,255,0.1)',
+    shadowColor: '#000',
+    shadowOffset: { width: 0, height: 20 },
+    shadowOpacity: 0.45,
+    shadowRadius: 40,
+    elevation: 24,
+  },
+  heroAccent: {
+    position: 'absolute',
+    top: -120,
+    right: -160,
+    width: 320,
+    height: 320,
+    borderRadius: 160,
+    opacity: 0.7,
+    zIndex: 0,
+  },
+  heroGlass: {
+    borderRadius: 26,
+    overflow: 'hidden',
+    zIndex: 1,
+  },
+  heroGlassInner: {
+    borderRadius: 26,
+    paddingHorizontal: '10%',
+    paddingTop: 4 * vh,
+    paddingBottom: 4 * vh,
+  },
+  heroContent: {
+    alignItems: 'center',
+    gap: 2.4 * vh,
+  },
+
   // Logo
   logoContainer: {
     marginBottom: 3 * vh,
@@ -561,23 +620,23 @@ const styles = StyleSheet.create({
 
   // Text
   title: {
-    fontSize: Math.max(22, 3.0 * vw),
+    fontSize: Math.max(24, 3.6 * vw),
     fontWeight: '800',
     color: PALETTE.textPrimary,
     textAlign: 'center',
-    marginBottom: 1.0 * vh,
+    marginBottom: 0.6 * vh,
     letterSpacing: -0.5,
   },
   subtitle: {
-    fontSize: Math.max(12, 1.8 * vw),
+    fontSize: Math.max(13, 1.9 * vw),
     color: PALETTE.textSecondary,
     textAlign: 'center',
-    marginBottom: 3.4 * vh,
-    lineHeight: 2.4 * vh,
+    marginBottom: 2.8 * vh,
+    lineHeight: 2.6 * vh,
   },
 
   // Buttons
-  buttonGroup: { width: '100%', gap: 12 },
+  buttonGroup: { width: '100%', gap: 14 },
   primaryButton: {
     borderRadius: 14,
     paddingVertical: 1.6 * vh,

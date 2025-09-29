@@ -2,7 +2,7 @@ import { SessionService } from './SessionService';
 
 class ActivityTracker {
   private static instance: ActivityTracker;
-  private activityTimer: NodeJS.Timeout | null = null;
+  private activityTimer: ReturnType<typeof setInterval> | null = null;
   private lastActivity: number = Date.now();
   
   public static getInstance(): ActivityTracker {

@@ -12,7 +12,8 @@ import {
   query,
   orderBy,
   limit,
-  where
+  where,
+  collectionGroup
 } from 'firebase/firestore';
 
 // Simplified Game Interface - Only Essential Fields
@@ -45,12 +46,127 @@ export interface PlatformStats {
 
 export class SimpleGameService {
   private static instance: SimpleGameService;
-  
+  private debounceTimers: Map<string, ReturnType<typeof setTimeout>> = new Map();
+  private gamesCache: Map<string, any> = new Map();
+  private cacheExpiry: Map<string, number> = new Map();
+  // 🚀 NEW: Batch like status checking cache
+  private likeStatusCache: Map<string, Map<string, boolean>> = new Map();
+  private readonly MAX_CACHE_SIZE = 50; // Increased but still bounded
+  private readonly CACHE_DURATION = 1000 * 60 * 10; // Increased to 10 minutes
+  private readonly DEBOUNCE_DELAY = 800; // Increased debounce for better batching
+
   public static getInstance(): SimpleGameService {
     if (!SimpleGameService.instance) {
       SimpleGameService.instance = new SimpleGameService();
     }
     return SimpleGameService.instance;
+  }
+
+  // Debounce helper for performance optimization
+  private debounce<T extends (...args: any[]) => any>(
+    key: string,
+    func: T,
+    delay: number = this.DEBOUNCE_DELAY
+  ): T {
+    return ((...args: any[]) => {
+      if (this.debounceTimers.has(key)) {
+        clearTimeout(this.debounceTimers.get(key)!);
+      }
+
+      const timeoutId = setTimeout(() => {
+        func.apply(this, args);
+        this.debounceTimers.delete(key);
+      }, delay);
+
+      this.debounceTimers.set(key, timeoutId as ReturnType<typeof setTimeout>);
+    }) as T;
+  }
+
+  // 🚀 PERFORMANCE: Optimized cache management with LRU-like behavior
+  private setCacheItem(key: string, value: any, maxSize: number = this.MAX_CACHE_SIZE): void {
+    // Implement LRU cache instead of simple FIFO
+    if (this.gamesCache.size >= maxSize) {
+      // Remove expired items first
+      const now = Date.now();
+      for (const [cacheKey, expiry] of this.cacheExpiry.entries()) {
+        if (expiry < now) {
+          this.gamesCache.delete(cacheKey);
+          this.cacheExpiry.delete(cacheKey);
+        }
+      }
+      
+      // If still too large, remove oldest
+      if (this.gamesCache.size >= maxSize) {
+        const oldestKey = this.gamesCache.keys().next().value;
+        if (oldestKey) {
+          this.gamesCache.delete(oldestKey);
+          this.cacheExpiry.delete(oldestKey);
+        }
+      }
+    }
+    
+    this.gamesCache.set(key, value);
+    this.cacheExpiry.set(key, Date.now() + this.CACHE_DURATION);
+  }
+
+  // 🚀 PERFORMANCE: Optimized cache retrieval
+  private getCacheItem(key: string): any | null {
+    const expiry = this.cacheExpiry.get(key);
+    if (!expiry || expiry < Date.now()) {
+      this.gamesCache.delete(key);
+      this.cacheExpiry.delete(key);
+      return null;
+    }
+    return this.gamesCache.get(key) || null;
+  }
+
+  /**
+   * 🚀 NEW: Batch check like status for multiple games (replaces N+1 queries)
+   */
+  private async batchCheckLikeStatus(games: SimpleGame[], userId: string): Promise<SimpleGame[]> {
+    try {
+      // Check cache first
+      const userLikeCache = this.likeStatusCache.get(userId);
+      if (userLikeCache) {
+        return games.map(game => ({
+          ...game,
+          liked: userLikeCache.get(game.id) || false
+        }));
+      }
+
+      // 🚀 PERFORMANCE: Use collectionGroup query to get all user likes at once
+      const userLikesQuery = query(
+        collectionGroup(db, 'user_likes'),
+        where('userId', '==', userId)
+      );
+      
+      const userLikesSnapshot = await getDocs(userLikesQuery);
+      const likedGameIds = new Set(
+        userLikesSnapshot.docs.map(doc => doc.data().gameId)
+      );
+
+      // Cache the like status for this user
+      const likeStatusMap = new Map<string, boolean>();
+      games.forEach(game => {
+        likeStatusMap.set(game.id, likedGameIds.has(game.id));
+      });
+      this.likeStatusCache.set(userId, likeStatusMap);
+
+      // Set cache expiry
+      setTimeout(() => {
+        this.likeStatusCache.delete(userId);
+      }, this.CACHE_DURATION);
+
+      return games.map(game => ({
+        ...game,
+        liked: likedGameIds.has(game.id)
+      }));
+
+    } catch (error) {
+      console.error('Error batch checking like status:', error);
+      // Fallback: return games without like status
+      return games.map(game => ({ ...game, liked: false }));
+    }
   }
 
   /**
@@ -373,43 +489,33 @@ export class SimpleGameService {
   }
 
   /**
-   * Get all active games with HTML content for public feed
+   * 🚀 PERFORMANCE OPTIMIZATION: Get all active games with BATCHED like status
    */
   async getAllGames(userId: string = '@you'): Promise<SimpleGame[]> {
     try {
+      // Check cache first with user-specific key
+      const cacheKey = `all_games_${userId}`;
+      const cached = this.getCacheItem(cacheKey);
+      if (cached) {
+        console.log('✅ Returning cached games:', cached.length);
+        return cached;
+      }
+
       const gamesRef = collection(db, 'games');
-      
-      // Use simple query first (no composite index required)
-      let q = query(gamesRef, where('isActive', '==', true));
-      let querySnapshot = await getDocs(q);
-      
-      // If successful, try to add ordering (may require index)
+      let q = query(gamesRef, where('isActive', '==', true), limit(50)); // Limit results for performance
+
       try {
-        q = query(gamesRef, where('isActive', '==', true), orderBy('createdAt', 'desc'));
-        querySnapshot = await getDocs(q);
+        q = query(gamesRef, where('isActive', '==', true), orderBy('createdAt', 'desc'), limit(50));
         console.log('✅ Using ordered query (newest first)');
       } catch (orderError) {
-        console.log('⚠️ Ordered query failed, using simple query (index building required)');
-        console.log('💡 This is normal during initial setup. Index will be created automatically.');
-        // Continue with the simple query result
+        console.log('⚠️ Using simple query (index building)');
       }
       
-      const games = querySnapshot.docs.map(doc => {
-        const data = doc.data();
-        const game = {
-          id: doc.id,
-          ...data
-        } as SimpleGame;
-        
-        // Log HTML content availability for debugging
-        if (game.html) {
-          console.log(`📄 Retrieved game with HTML: ${game.id} (${game.html.length} chars)`);
-        } else {
-          console.log(`⚠️ Game missing HTML content: ${game.id}`);
-        }
-        
-        return game;
-      });
+      const querySnapshot = await getDocs(q);
+      const games = querySnapshot.docs.map(doc => ({
+        id: doc.id,
+        ...doc.data()
+      } as SimpleGame));
       
       // Sort manually if ordering failed (fallback)
       if (games.length > 0 && games[0].createdAt) {
@@ -425,22 +531,15 @@ export class SimpleGameService {
         }
       }
       
-      // Add user like status for each game
-      const gamesWithLikeStatus = await Promise.all(
-        games.map(async (game) => {
-          try {
-            const liked = await this.hasUserLikedGame(game.id, userId);
-            return { ...game, liked };
-          } catch (error) {
-            console.log(`⚠️ Could not check like status for game ${game.id}:`, error);
-            return { ...game, liked: false };
-          }
-        })
-      );
+      // 🚀 CRITICAL FIX: Batch like status check instead of N individual queries
+      const gamesWithLikeStatus = await this.batchCheckLikeStatus(games, userId);
       
       console.log(`📦 Retrieved ${games.length} games from Firebase`);
       console.log(`🌐 Games with HTML content: ${games.filter(g => g.html).length}`);
-      
+
+      // Cache the results with TTL
+      this.setCacheItem(cacheKey, gamesWithLikeStatus, this.MAX_CACHE_SIZE);
+
       return gamesWithLikeStatus;
     } catch (error) {
       console.error('Error getting games:', error);
@@ -856,7 +955,7 @@ export class SimpleGameService {
     try {
       const statsRef = doc(db, 'game_stats', 'platform');
       const statsDoc = await getDoc(statsRef);
-      
+
       if (statsDoc.exists()) {
         return statsDoc.data() as PlatformStats;
       }
@@ -865,6 +964,38 @@ export class SimpleGameService {
       console.error('Error getting platform stats:', error);
       return null;
     }
+  }
+
+  // Offline support: Get cached games when offline
+  async getCachedGames(): Promise<SimpleGame[]> {
+    try {
+      const cacheKeys = Array.from(this.gamesCache.keys());
+      const cachedGames: SimpleGame[] = [];
+
+      for (const key of cacheKeys) {
+        if (key.startsWith('all_games_')) {
+          const games = this.getCacheItem(key);
+          if (games && Array.isArray(games)) {
+            cachedGames.push(...games);
+          }
+        }
+      }
+
+      return cachedGames;
+    } catch (error) {
+      console.error('Error getting cached games:', error);
+      return [];
+    }
+  }
+
+  // 🚀 PERFORMANCE: Clear caches more aggressively
+  clearAllCaches(): void {
+    this.gamesCache.clear();
+    this.cacheExpiry.clear();
+    this.likeStatusCache.clear();
+    this.debounceTimers.forEach(timer => clearTimeout(timer));
+    this.debounceTimers.clear();
+    console.log('🧹 All caches cleared for memory management');
   }
 }
 

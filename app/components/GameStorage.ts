@@ -99,6 +99,51 @@ const STORAGE_KEYS = {
 } as const;
 
 class GameStorageManager {
+  // 🚀 PERFORMANCE OPTIMIZATION: Batch storage operations
+  private writeQueue: Map<string, any> = new Map();
+  private isProcessingQueue = false;
+  private queueProcessor: ReturnType<typeof setTimeout> | null = null;
+
+  // 🚀 PERFORMANCE: Batch storage operations
+  private async processWriteQueue() {
+    if (this.isProcessingQueue || this.writeQueue.size === 0) return;
+    
+    this.isProcessingQueue = true;
+    const operations = Array.from(this.writeQueue.entries());
+    this.writeQueue.clear();
+
+    try {
+      // Batch all storage operations
+      await Promise.all(
+        operations.map(async ([key, value]) => {
+          await storage.setItem(key, JSON.stringify(value));
+        })
+      );
+      console.log(`✅ Batched ${operations.length} storage operations`);
+    } catch (error) {
+      console.error('Error in batch storage operations:', error);
+      // Re-queue failed operations
+      operations.forEach(([key, value]) => {
+        this.writeQueue.set(key, value);
+      });
+    } finally {
+      this.isProcessingQueue = false;
+    }
+  }
+
+  // 🚀 PERFORMANCE: Throttled save operation
+  private queueWrite(key: string, value: any) {
+    this.writeQueue.set(key, value);
+    
+    if (this.queueProcessor) {
+      clearTimeout(this.queueProcessor);
+    }
+    
+    this.queueProcessor = setTimeout(() => {
+      this.processWriteQueue();
+    }, 1000); // Batch operations every 1 second
+  }
+
   // Initialize default profile
   async initializeProfile(): Promise<void> {
     const profile = await this.getUserProfile();
@@ -145,15 +190,14 @@ class GameStorageManager {
     }
   }
 
-  // Game management
+  // 🚀 OPTIMIZED: Save game with immediate storage for critical data
   async saveGame(game: Omit<StoredGame, 'id' | 'createdAt' | 'updatedAt' | 'views' | 'comments'>): Promise<StoredGame> {
     try {
       const games = await this.getAllGames();
       
-      // Generate a more unique ID
       const timestamp = Date.now();
       const random = Math.random().toString(36).substr(2, 9);
-      const uniqueId = `game_${timestamp}_${random}_${games.length}`;
+      const uniqueId = `game_${timestamp}_${random}`;
       
       const newGame: StoredGame = {
         ...game,
@@ -164,28 +208,35 @@ class GameStorageManager {
         comments: 0,
       };
       
-      // Double-check for uniqueness
-      const exists = games.some(g => g.id === newGame.id);
-      if (exists) {
-        // If somehow still not unique, add extra randomness
-        newGame.id = `${newGame.id}_${Math.random().toString(36).substr(2, 5)}`;
-      }
-      
       const updatedGames = [newGame, ...games];
+      
+      // 🚀 CRITICAL: Save games immediately (don't queue)
       await storage.setItem(STORAGE_KEYS.GAMES, JSON.stringify(updatedGames));
       
-      // Update user profile stats
-      const profile = await this.getUserProfile();
-      if (profile) {
-        await this.updateUserProfile({
-          totalGames: profile.totalGames + 1,
-        });
-      }
+      // Update profile stats in background
+      this.updateUserStatsInBackground();
       
       return newGame;
     } catch (error) {
       console.error('Failed to save game:', error);
       throw error;
+    }
+  }
+
+  // 🚀 PERFORMANCE: Background stats update
+  private async updateUserStatsInBackground() {
+    try {
+      const profile = await this.getUserProfile();
+      const games = await this.getUserGames();
+      if (profile) {
+        this.queueWrite(STORAGE_KEYS.USER_PROFILE, {
+          ...profile,
+          totalGames: games.length,
+          totalLikes: games.reduce((sum, g) => sum + g.likes, 0),
+        });
+      }
+    } catch (error) {
+      console.warn('Failed to update user stats in background:', error);
     }
   }
 
@@ -438,12 +489,12 @@ class GameStorageManager {
     }
   }
 
-  // Create tab state management
+  // 🚀 OPTIMIZED: Save create tab state with throttling
   async saveCreateTabState(state: CreateTabState): Promise<void> {
     try {
-      await storage.setItem(STORAGE_KEYS.CREATE_TAB_STATE, JSON.stringify(state));
+      this.queueWrite(STORAGE_KEYS.CREATE_TAB_STATE, state);
     } catch (error) {
-      console.error('Failed to save create tab state:', error);
+      console.error('Failed to queue create tab state:', error);
     }
   }
 

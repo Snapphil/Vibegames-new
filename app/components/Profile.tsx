@@ -393,7 +393,7 @@ const Profile = React.forwardRef<{ refresh: () => void }, {
               <>
                 <View style={styles.createMoreSection}>
                   <Pressable style={styles.createMoreBtn} onPress={() => onCreateGame?.()}>
-                    <Ionicons name="add-circle" size={20} color="#7C4DFF" />
+                    <CustomIcon name="add" size={20} color="#7C4DFF" />
                     <Text style={styles.createMoreText}>Create Another Game</Text>
                   </Pressable>
                 </View>

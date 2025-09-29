@@ -22,7 +22,7 @@ export class UserMigrationService {
 
   private isFirebaseUID(str: string): boolean {
     // Firebase UIDs are typically 28 characters long and contain alphanumeric characters
-    return str && str.length === 28 && /^[a-zA-Z0-9]+$/.test(str);
+    return Boolean(str) && str.length === 28 && /^[a-zA-Z0-9]+$/.test(str);
   }
 
   /**
