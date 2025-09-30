@@ -111,6 +111,8 @@ interface RoundStatus {
   isUserQuery?: boolean;
   isProblemFinder?: boolean;
   problems?: ProblemFinderProblem[];
+  isEditAnalyzer?: boolean;
+  editAnalysis?: EditModeProblemAnalyzerOutput;
 }
 
 interface ProblemFinderProblem {
@@ -125,6 +127,15 @@ interface ProblemFinderOutput {
   should_terminate: boolean;
   problems: ProblemFinderProblem[];
   reasoning?: string;
+}
+
+interface EditModeProblemAnalyzerOutput {
+  user_intent: string;
+  issues_found: Array<{
+    line_number: number;
+    issue: string;
+  }>;
+  instructions_for_patch_developer: string;
 }
 
 interface GameCreatorProps {
@@ -825,69 +836,139 @@ export default function GameCreator({ onGamePublished }: GameCreatorProps = {}) 
 
   // Edit system prompt for patch developer
   const buildEditSystemPrompt = (): string => {
-    return `You are a patch developer. Your only task is to fix the code as per the user request by giving only correct code that needs to be replaced by old
+    return `You are a patch developer for HTML game code. Your task is to edit the provided HTML code according to the user's request.
 
--ln145
--ln146
-+ln150 correct code line
-+ln151 correct code line
-...many
+CRITICAL RULES:
+1. Respond with ONLY a series of delete (-) and add (+) lines
+2. NO extra text, NO explanations, NO headers like "Begin Patch" or "End Patch"
+3. NO file names or separators between patches
 
-As many lines as you want to use to fix the code`;
+FORMAT:
+- For deletions: -lnN (where N is the line number to delete, NO CODE)
+- For additions: +lnN <complete_new_code_line> (where N is the line number to insert at)
+
+EXAMPLE RESPONSE:
+-ln45
+-ln46
+-ln47
++ln45     <canvas id="game"></canvas>
++ln46     <script>
+-ln102
++ln102       const speed = 5;
+
+PROCESS:
+1. Read the numbered HTML code provided
+2. Identify lines that need to be removed or changed
+3. Output deletion lines first (-lnN)
+4. Then output addition lines with complete code (+lnN code...)
+5. You can have multiple separate patches in one response
+
+Remember: ONLY output the patch lines, nothing else.`;
   };
 
   // Parse edit patch response
   const parseEditPatch = (response: string): { success: boolean; patches: Array<{ type: 'remove' | 'add'; lineNumber?: number; content?: string }> } => {
+    console.log('\n=== PARSING EDIT PATCH ===');
+    console.log('Raw response length:', response.length);
+    
     const lines = response.trim().split('\n');
     const patches: Array<{ type: 'remove' | 'add'; lineNumber?: number; content?: string }> = [];
     
     for (const line of lines) {
       const trimmedLine = line.trim();
+      
+      // Skip empty lines
+      if (!trimmedLine) continue;
+      
+      // Parse deletion: -lnN
       if (trimmedLine.startsWith('-ln')) {
         const lineNumMatch = trimmedLine.match(/^-ln(\d+)$/);
         if (lineNumMatch) {
+          const lineNum = parseInt(lineNumMatch[1]);
           patches.push({
             type: 'remove',
-            lineNumber: parseInt(lineNumMatch[1])
+            lineNumber: lineNum
           });
+          console.log(`DELETE line ${lineNum}`);
+        } else {
+          console.warn('Failed to parse deletion line:', trimmedLine);
         }
-      } else if (trimmedLine.startsWith('+ln')) {
+      } 
+      // Parse addition: +lnN <code>
+      else if (trimmedLine.startsWith('+ln')) {
         const contentMatch = trimmedLine.match(/^\+ln(\d+)\s+(.*)$/);
         if (contentMatch) {
+          const lineNum = parseInt(contentMatch[1]);
+          const code = contentMatch[2];
           patches.push({
             type: 'add',
-            lineNumber: parseInt(contentMatch[1]),
-            content: contentMatch[2]
+            lineNumber: lineNum,
+            content: code
           });
+          console.log(`ADD line ${lineNum}: ${code.substring(0, 50)}${code.length > 50 ? '...' : ''}`);
+        } else {
+          // Handle case where +lnN has no space after it
+          const noSpaceMatch = trimmedLine.match(/^\+ln(\d+)(.*)$/);
+          if (noSpaceMatch) {
+            const lineNum = parseInt(noSpaceMatch[1]);
+            const code = noSpaceMatch[2];
+            patches.push({
+              type: 'add',
+              lineNumber: lineNum,
+              content: code
+            });
+            console.log(`ADD line ${lineNum}: ${code.substring(0, 50)}${code.length > 50 ? '...' : ''}`);
+          } else {
+            console.warn('Failed to parse addition line:', trimmedLine);
+          }
         }
+      } else {
+        console.warn('Skipping non-patch line:', trimmedLine.substring(0, 80));
       }
     }
+    
+    console.log(`Total patches parsed: ${patches.length} (${patches.filter(p => p.type === 'remove').length} deletions, ${patches.filter(p => p.type === 'add').length} additions)`);
+    console.log('=== END PARSING ===\n');
     
     return { success: patches.length > 0, patches };
   };
 
   // Apply edit patches to HTML
   const applyEditPatches = (html: string, patches: Array<{ type: 'remove' | 'add'; lineNumber?: number; content?: string }>): string => {
+    console.log('\n=== APPLYING PATCHES ===');
     const lines = html.split('\n');
+    console.log(`Original HTML has ${lines.length} lines`);
     
     // Sort patches by line number (descending for removals, ascending for additions)
     const removals = patches.filter(p => p.type === 'remove').sort((a, b) => (b.lineNumber || 0) - (a.lineNumber || 0));
     const additions = patches.filter(p => p.type === 'add').sort((a, b) => (a.lineNumber || 0) - (b.lineNumber || 0));
     
+    console.log(`Applying ${removals.length} removals...`);
     // Apply removals first (from bottom to top to maintain line numbers)
     for (const removal of removals) {
       if (removal.lineNumber && removal.lineNumber > 0 && removal.lineNumber <= lines.length) {
+        const removed = lines[removal.lineNumber - 1];
         lines.splice(removal.lineNumber - 1, 1);
+        console.log(`  Removed line ${removal.lineNumber}: ${removed.substring(0, 60)}...`);
+      } else {
+        console.warn(`  Invalid removal line number: ${removal.lineNumber} (HTML has ${lines.length} lines)`);
       }
     }
     
+    console.log(`Applying ${additions.length} additions...`);
     // Apply additions
     for (const addition of additions) {
       if (addition.lineNumber && addition.content !== undefined) {
         const insertIndex = Math.max(0, Math.min(addition.lineNumber - 1, lines.length));
         lines.splice(insertIndex, 0, addition.content);
+        console.log(`  Inserted at line ${addition.lineNumber}: ${addition.content.substring(0, 60)}...`);
+      } else {
+        console.warn(`  Invalid addition: line ${addition.lineNumber}, content: ${addition.content !== undefined}`);
       }
     }
+    
+    console.log(`Result HTML has ${lines.length} lines`);
+    console.log('=== END APPLYING PATCHES ===\n');
     
     return lines.join('\n');
   };
@@ -966,7 +1047,17 @@ Deliverable:
     }
 
     const systemPrompt = buildEditSystemPrompt();
-    const userPrompt = `${userQuery}\n\n${numberedHtml}`;
+    const userPrompt = `USER REQUEST: ${userQuery}
+
+NUMBERED HTML CODE:
+${numberedHtml}
+
+Remember: Respond with ONLY the patch lines (-lnN for deletions, +lnN code for additions). No other text.`;
+
+    console.log('\n=== EDIT API REQUEST ===');
+    console.log('User Query:', userQuery);
+    console.log('System Prompt:', systemPrompt.substring(0, 200) + '...');
+    console.log('HTML Lines:', numberedHtml.split('\n').length);
 
     const response = await fetch('https://api.openai.com/v1/chat/completions', {
       method: 'POST',
@@ -998,7 +1089,14 @@ Deliverable:
     }
 
     const data = await response.json();
-    return data.choices?.[0]?.message?.content || "";
+    const aiResponse = data.choices?.[0]?.message?.content || "";
+    
+    console.log('\n=== EDIT API RESPONSE ===');
+    console.log('Full Response:');
+    console.log(aiResponse);
+    console.log('=== END RESPONSE ===\n');
+    
+    return aiResponse;
   };
 
   // OpenAI API call
@@ -1075,55 +1173,45 @@ Deliverable:
 
   // Problem Finder Agent
   const buildProblemFinderSystemPrompt = (): string => {
-    return `You are a Problem Finder Agent - a senior developer code reviewer analyzing HTML5 game code between generation rounds.
+    return `You are a Problem Finder Agent — a senior HTML5 game reviewer. Follow the Gameplan strictly. Prioritize issues in this order: 1) Syntax/Linter Errors, 2) Gameplan gaps/misimplementations, 3) Other functional bugs. Ignore anything not required by the Gameplan.
 
-Your role is to identify specific, actionable problems that will improve the game quality in the next round.
-
-INPUT YOU RECEIVE:
-- Complete HTML code from previous round
-- Original Game Plan requirements
+INPUTS:
+- Previous round HTML code
+- Gameplan
 - Syntax/Linter errors (if any)
-- QA check results
+- QA results (only consider if tied to Gameplan or errors)
 
-YOUR TASK:
-1. Compare the code against the Game Plan to identify missing features or incorrect implementations
-2. Review syntax/linter errors and determine root causes
-3. Analyze QA issues and prioritize critical problems
-4. Identify bugs, disconnected logic, or missing functionality
-5. Check mobile-readiness (touch controls, viewport, font sizes)
+TASK:
+1) Identify and fix syntax/linter errors first.  
+2) Check strict compliance with the Gameplan (missing/incorrect features).  
+3) Then find functional bugs/disconnected logic that impact Gameplan behavior.  
+4) Only assess mobile-readiness if required by the Gameplan.
 
-OUTPUT REQUIREMENTS:
-You must respond with ONLY valid JSON in this exact format:
+OUTPUT (JSON only):
 {
   "should_terminate": false,
-  "reasoning": "Brief explanation of your analysis",
+  "reasoning": "Brief explanation of your analysis in 3-5 lines",
   "problems": [
     {
       "id": 1,
       "description": "Specific problem description",
-      "old_code": "Code snippet causing the issue (optional)",
-      "new_code": "Suggested fix (optional)",
       "priority": "high"
     }
   ]
 }
 
 RULES:
-- Maximum 5 problems per analysis
-- If code is perfect and meets all requirements, set "should_terminate": true with empty problems array
-- Prioritize: high = critical bugs/missing features, medium = improvements, low = polish
-- Be specific and actionable in descriptions
-- Focus on problems that impact functionality, not style preferences
-- If there are syntax errors, they are ALWAYS high priority
+- Max 3 problems.
+- Order problems by priority: Errors first, then Gameplan gaps, then other bugs.
+- Priority: high = syntax/linter errors or missing Gameplan features; medium = bugs affecting Gameplan behavior; low = minor polish.
+- Be specific and actionable; no style opinions.
+- If everything meets the Gameplan and there are no errors, set "should_terminate": true and return an empty problems array.
 
-TERMINATION CRITERIA:
-Set "should_terminate": true ONLY when:
-- All linter/syntax errors are fixed
-- All critical QA errors are resolved
-- Game Plan requirements are fully implemented
-- Game is playable and mobile-ready
-
-Return ONLY the JSON object, no additional text.`;
+TERMINATION:
+Set "should_terminate": true only when:
+- No syntax/linter errors remain, and
+- All Gameplan requirements are fully implemented, and
+- No critical issues remain that affect Gameplan functionality.`;
   };
 
   const callProblemFinder = async (
@@ -1220,6 +1308,118 @@ Respond with ONLY the JSON object as specified in the system prompt.`;
     };
   };
 
+  // Edit Mode Problem Analyzer
+  const buildEditModeProblemAnalyzerPrompt = (): string => {
+    return `You are an Edit Mode Problem Analyzer. Analyze user requests and identify exact code issues with line numbers.
+
+INPUTS:
+- User's edit request
+- Numbered HTML code (each line prefixed with line number)
+
+TASK:
+Find exact line numbers where the issue exists. Point to the problematic code.
+
+OUTPUT (JSON only):
+{
+  "user_intent": "What user wants to achieve",
+  "issues_found": [
+    {
+      "line_number": 42,
+      "issue": "Missing floor collision detection in game loop"
+    }
+  ],
+  "instructions_for_patch_developer": "Brief instructions on what needs to be fixed"
+}
+
+RULES:
+- Use exact line numbers from the numbered code
+- Be specific and concise
+- Max 3 issues`;
+  };
+
+  const callEditModeProblemAnalyzer = async (
+    userRequest: string,
+    numberedHtmlCode: string
+  ): Promise<{ output: EditModeProblemAnalyzerOutput; usage: any }> => {
+    const appConfigService = AppConfigService.getInstance();
+    const config = await appConfigService.getConfig();
+
+    // Get API key from config with fallback to env variables (same as Problem Finder)
+    const apiKey = config.api_key_gpt ||
+      (typeof process !== "undefined" &&
+        (process as any).env &&
+          (((process as any).env.EXPO_PUBLIC_OPENAI_API_KEY as string) ||
+           (process as any).env.OPENAI_API_KEY)) ||
+      "";
+
+    if (!apiKey) {
+      throw new Error("Missing OpenAI API key");
+    }
+
+    const systemPrompt = buildEditModeProblemAnalyzerPrompt();
+    
+    const userPrompt = `USER REQUEST:
+${userRequest}
+
+NUMBERED HTML CODE:
+${numberedHtmlCode.substring(0, 15000)}${numberedHtmlCode.length > 15000 ? '\n... (code truncated for length)' : ''}
+
+Identify the exact line numbers with issues and provide your analysis in JSON format.`;
+
+    console.log('\n=== EDIT MODE PROBLEM ANALYZER API REQUEST ===');
+    console.log('User Request:', userRequest.substring(0, 100));
+    console.log('Numbered HTML Lines:', numberedHtmlCode.split('\n').length);
+
+    const response = await fetch('https://api.openai.com/v1/chat/completions', {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        'Authorization': `Bearer ${apiKey}`,
+      },
+      body: JSON.stringify({
+        model: config.model_name || "gpt-5-mini",
+        messages: [
+          {
+            role: "developer",
+            content: [{ type: "text", text: systemPrompt }]
+          },
+          {
+            role: "user",
+            content: [{ type: "text", text: userPrompt }]
+          }
+        ],
+        response_format: { type: "json_object" },
+        verbosity: config.verbosity || "low",
+        reasoning_effort: config.reasoning_effort || "low"
+      }),
+    });
+
+    if (!response.ok) {
+      const errorText = await response.text();
+      throw new Error(`Edit Mode Problem Analyzer API error: HTTP ${response.status} - ${errorText}`);
+    }
+
+    const data = await response.json();
+    const content = data.choices?.[0]?.message?.content || "{}";
+    
+    let parsedOutput: EditModeProblemAnalyzerOutput;
+    try {
+      parsedOutput = JSON.parse(content);
+    } catch (e) {
+      console.error("Failed to parse Edit Mode Problem Analyzer output:", content);
+      parsedOutput = {
+        user_intent: userRequest,
+        issues_found: [],
+        instructions_for_patch_developer: userRequest
+      };
+    }
+
+    return {
+      output: parsedOutput,
+      usage: data.usage
+    };
+  };
+
   // Controller loop with Problem Finder integration
   const controllerLoop = async (userTopic: string, maxRounds = 5): Promise<string> => {
     const systemPrompt = buildSystemPrompt();
@@ -1236,9 +1436,8 @@ Create detailed instructions that include:
    - For 3D games (space, depth, rotation, 3D objects): Use Three.js
    - For 2D games (platformers, puzzles, classic arcade): Use HTML5 Canvas API
    - If the query doesn't specify, make a reasonable assumption based on typical game mechanics
-3. **Color Theme**: Choose ONE theme from the list and specify 4-6 main colors with hex codes:
+3. **Color Theme**: Choose ONE theme from the list and specify 4-6 main colors with hex codes. IMPORTANT: Do NOT use Neon/Cyber theme unless specifically requested by the user.
    - **Arcade Bright**: \`#FF0000\`, \`#0000FF\`, \`#FFFF00\`, \`#00FF00\`, \`#FFFFFF\`, \`#000000\`
-   - **Neon/Cyber**: \`#FF00FF\`, \`#00FFFF\`, \`#FF1493\`, \`#39FF14\`, \`#000000\`, \`#1a1a2e\`
    - **Pastel Casual**: \`#FFB6C1\`, \`#87CEEB\`, \`#98FB98\`, \`#DDA0DD\`, \`#FFF8DC\`, \`#FFE4E1\`
    - **Dark Mode**: \`#0d0d0d\`, \`#1a1a1a\`, \`#2d2d2d\`, \`#00d9ff\`, \`#ff6b6b\`, \`#ffffff\`
    - **Retro 8-bit**: \`#000000\`, \`#FFFFFF\`, \`#E0E0E0\`, \`#880000\`, \`#008888\`, \`#FFFF00\`
@@ -1607,7 +1806,7 @@ Rules:
     return latestHtml || '';
   };
 
-  // Handle edit request with retry logic for linter errors
+  // Handle edit request with Edit Mode Problem Analyzer and retry logic
   const handleEditRequest = async (editQuery: string) => {
     if (!gameHtml || !editQuery.trim()) return;
 
@@ -1622,46 +1821,90 @@ Rules:
         description: "Edit request",
         timestamp: Date.now(),
         status: "User edit query received",
-        isUserQuery: true // Flag to identify this as a user query for special rendering
+        isUserQuery: true
       }]);
 
+      // Step 1: Run Edit Mode Problem Analyzer with numbered HTML
+      setEditRoundHistory(prev => [...prev, {
+        round: prev.length + 1,
+        message: "Edit Mode Problem Analyzer: Analyzing request...",
+        description: "Identifying exact issues with line numbers",
+        timestamp: Date.now(),
+        status: "Analyzing code structure"
+      }]);
+
+      console.log('\n=== EDIT MODE PROBLEM ANALYZER ===');
+      const numberedHtml = addLineNumbers(gameHtml);
+      const { output: analyzerOutput, usage: analyzerUsage } = await callEditModeProblemAnalyzer(
+        editQuery,
+        numberedHtml
+      );
+
+      console.log('Edit Mode Problem Analyzer Output:', JSON.stringify(analyzerOutput, null, 2));
+
+      // Add analyzer results to edit history
+      setEditRoundHistory(prev => [...prev, {
+        round: prev.length + 1,
+        message: `Analysis Complete: ${analyzerOutput.user_intent}`,
+        description: `Found ${analyzerOutput.issues_found.length} issue(s)`,
+        timestamp: Date.now(),
+        status: analyzerOutput.instructions_for_patch_developer,
+        tokens: analyzerUsage?.total_tokens || 0,
+        isEditAnalyzer: true,
+        editAnalysis: analyzerOutput
+      }]);
+
+      // Step 2: Pass instructions to Patch Developer
       let currentHtml = gameHtml;
       let attempt = 1;
       const maxAttempts = 2;
       
       while (attempt <= maxAttempts) {
-        // Add "Editing the html" status - live update
+        // Add "Patch Developer working" status
         setEditRoundHistory(prev => [...prev, {
           round: prev.length + 1,
-          message: attempt === 1 ? "Editing the HTML" : `Fixing errors (Attempt ${attempt})`,
-          description: attempt === 1 ? "Processing edit" : "Fixing linter/syntax errors",
+          message: attempt === 1 ? "Patch Developer: Applying changes..." : `Patch Developer: Fixing errors (Attempt ${attempt})`,
+          description: attempt === 1 ? "Implementing the analyzed solution" : "Correcting linter/syntax errors",
           timestamp: Date.now(),
-          status: attempt === 1 ? "Applying changes to code" : "Correcting errors in code"
+          status: attempt === 1 ? "Applying code patches" : "Fixing remaining errors"
         }]);
 
         // Number the HTML
         const numberedHtml = addLineNumbers(currentHtml);
         
-        // Prepare the prompt for this attempt
-        let promptToSend = editQuery;
+        // Prepare the prompt for patch developer with line-specific issues
+        let issuesList = analyzerOutput.issues_found.map(issue => 
+          `Line ${issue.line_number}: ${issue.issue}`
+        ).join('\n');
+        
+        let promptToSend = `${analyzerOutput.instructions_for_patch_developer}
+
+SPECIFIC ISSUES TO FIX:
+${issuesList}`;
         
         if (attempt > 1) {
-          // For retry attempts, include linter errors in the prompt
+          // For retry attempts, include linter errors
           const lintErrors = lintHtml(currentHtml);
           if (lintErrors.length > 0) {
             const errorReport = formatErrorsForPrompt(lintErrors);
-            promptToSend = `${editQuery}\n\nFIX THESE LINTER/SYNTAX ERRORS:\n${errorReport}`;
+            promptToSend = `${analyzerOutput.instructions_for_patch_developer}
+
+SPECIFIC ISSUES TO FIX:
+${issuesList}
+
+FIX THESE LINTER/SYNTAX ERRORS:
+${errorReport}`;
           }
         }
         
-        // Call edit API
+        // Call edit API (Patch Developer)
         const editResponse = await callEditAPI(promptToSend, numberedHtml);
         
         // Parse the patch response
         const parseResult = parseEditPatch(editResponse);
         
         if (!parseResult.success) {
-          throw new Error("Failed to parse edit response");
+          throw new Error("Failed to parse patch developer response");
         }
         
         // Apply patches to current HTML
@@ -1678,10 +1921,10 @@ Rules:
             // Success - no errors
             setEditRoundHistory(prev => [...prev, {
               round: prev.length + 1,
-              message: "Edit completed",
-              description: "Changes applied successfully",
+              message: "Edit completed successfully! ✨",
+              description: "All changes applied without errors",
               timestamp: Date.now(),
-              status: `Applied ${parseResult.patches.length} changes${attempt > 1 ? ` (after ${attempt} attempts)` : ''}`
+              status: `Applied ${parseResult.patches.length} patches${attempt > 1 ? ` (after ${attempt} attempts)` : ''}`
             }]);
           } else {
             // Final attempt with remaining errors
@@ -1690,7 +1933,7 @@ Rules:
               message: "Edit completed with warnings",
               description: "Changes applied but some errors remain",
               timestamp: Date.now(),
-              status: `Applied ${parseResult.patches.length} changes, ${lintErrors.length} linter errors remain`
+              status: `Applied ${parseResult.patches.length} patches, ${lintErrors.length} linter errors remain`
             }]);
           }
           break;
@@ -1713,7 +1956,7 @@ Rules:
       setEditRoundHistory(prev => [...prev, {
         round: prev.length + 1,
         message: "Edit failed",
-        description: "Error applying changes",
+        description: "Error during edit process",
         timestamp: Date.now(),
         status: `Error: ${error instanceof Error ? error.message : 'Unknown error'}`
       }]);
@@ -2241,6 +2484,43 @@ Rules:
                             <Text style={styles.userQueryText}>{status.message}</Text>
                           </View>
                         </View>
+                      ) : status.isEditAnalyzer ? (
+                        // Render Edit Mode Problem Analyzer with special styling
+                        <View style={styles.editAnalyzerRow}>
+                          <View style={styles.editAnalyzerContainer}>
+                            <View style={styles.editAnalyzerHeader}>
+                              <View style={styles.editAnalyzerIconContainer}>
+                                <CustomIcon name="bulb" size={SCREEN_W * 0.04} color="#8B5CF6" />
+                              </View>
+                              <Text style={styles.editAnalyzerTitle}>Edit Mode Problem Analyzer</Text>
+                              {status.tokens && typeof status.tokens === 'number' && status.tokens > 0 && (
+                                <Text style={styles.editAnalyzerTokens}>
+                                  {status.tokens.toLocaleString()} tokens
+                                </Text>
+                              )}
+                            </View>
+                            <Text style={styles.editAnalyzerMessage}>{status.message}</Text>
+                            {status.editAnalysis && (
+                              <>
+                                {status.editAnalysis.issues_found && status.editAnalysis.issues_found.length > 0 && (
+                                  <View style={styles.analysisSection}>
+                                    <Text style={styles.analysisSectionTitle}>🔍 Issues Found:</Text>
+                                    {status.editAnalysis.issues_found.map((issue, idx) => (
+                                      <View key={idx} style={styles.lineIssueItem}>
+                                        <Text style={styles.lineNumber}>Line {issue.line_number}:</Text>
+                                        <Text style={styles.issueText}>{issue.issue}</Text>
+                                      </View>
+                                    ))}
+                                  </View>
+                                )}
+                                <View style={styles.analysisSection}>
+                                  <Text style={styles.analysisSectionTitle}>📋 Instructions for Patch Developer:</Text>
+                                  <Text style={styles.instructionsContent}>{status.editAnalysis.instructions_for_patch_developer}</Text>
+                                </View>
+                              </>
+                            )}
+                          </View>
+                        </View>
                       ) : status.isProblemFinder ? (
                         // Render Problem Finder analysis with special styling
                         <View style={styles.problemFinderRow}>
@@ -2262,7 +2542,7 @@ Rules:
                             )}
                             {status.problems && status.problems.length > 0 && (
                               <View style={styles.problemsList}>
-                                {status.problems.map((problem, idx) => (
+                                {status.problems.map((problem) => (
                                   <View key={problem.id} style={styles.problemItem}>
                                     <View style={styles.problemHeader}>
                                       <View style={[
@@ -2273,21 +2553,8 @@ Rules:
                                       ]}>
                                         <Text style={styles.priorityText}>{problem.priority.toUpperCase()}</Text>
                                       </View>
-                                      <Text style={styles.problemNumber}>#{idx + 1}</Text>
                                     </View>
                                     <Text style={styles.problemDescription}>{problem.description}</Text>
-                                    {problem.old_code && (
-                                      <View style={styles.codeBlock}>
-                                        <Text style={styles.codeLabel}>Current:</Text>
-                                        <Text style={styles.codeText} numberOfLines={2}>{problem.old_code}</Text>
-                                      </View>
-                                    )}
-                                    {problem.new_code && (
-                                      <View style={styles.codeBlock}>
-                                        <Text style={styles.codeLabel}>Suggested:</Text>
-                                        <Text style={styles.codeText} numberOfLines={2}>{problem.new_code}</Text>
-                                      </View>
-                                    )}
                                   </View>
                                 ))}
                               </View>
@@ -2940,10 +3207,10 @@ const styles = StyleSheet.create({
   },
   problemFinderReasoning: {
     color: "#E5E7EB",
-    fontSize: SCREEN_W * 0.03,
+    fontSize: SCREEN_W * 0.026,
     fontStyle: "italic",
     marginBottom: SCREEN_H * 0.015,
-    lineHeight: SCREEN_W * 0.045,
+    lineHeight: SCREEN_W * 0.04,
   },
   problemsList: {
     gap: SCREEN_H * 0.015,
@@ -2991,6 +3258,90 @@ const styles = StyleSheet.create({
     fontSize: SCREEN_W * 0.032,
     lineHeight: SCREEN_W * 0.048,
     marginBottom: SCREEN_H * 0.008,
+  },
+  // Edit Mode Problem Analyzer styles
+  editAnalyzerRow: {
+    alignItems: "flex-start",
+    marginBottom: SCREEN_H * 0.02,
+  },
+  editAnalyzerContainer: {
+    backgroundColor: "rgba(139, 92, 246, 0.1)",
+    borderRadius: SCREEN_W * 0.03,
+    padding: SCREEN_W * 0.04,
+    borderWidth: 1,
+    borderColor: "rgba(139, 92, 246, 0.3)",
+    width: "100%",
+  },
+  editAnalyzerHeader: {
+    flexDirection: "row",
+    alignItems: "center",
+    marginBottom: SCREEN_H * 0.01,
+    gap: SCREEN_W * 0.02,
+  },
+  editAnalyzerIconContainer: {
+    width: SCREEN_W * 0.07,
+    height: SCREEN_W * 0.07,
+    borderRadius: SCREEN_W * 0.035,
+    backgroundColor: "rgba(139, 92, 246, 0.2)",
+    alignItems: "center",
+    justifyContent: "center",
+  },
+  editAnalyzerTitle: {
+    color: "#8B5CF6",
+    fontSize: SCREEN_W * 0.035,
+    fontWeight: "700",
+    flex: 1,
+  },
+  editAnalyzerTokens: {
+    color: "#9CA3AF",
+    fontSize: SCREEN_W * 0.028,
+    fontWeight: "500",
+  },
+  editAnalyzerMessage: {
+    color: "#C4B5FD",
+    fontSize: SCREEN_W * 0.033,
+    fontWeight: "600",
+    marginBottom: SCREEN_H * 0.015,
+  },
+  analysisSection: {
+    marginBottom: SCREEN_H * 0.015,
+    backgroundColor: "rgba(0, 0, 0, 0.2)",
+    borderRadius: SCREEN_W * 0.02,
+    padding: SCREEN_W * 0.03,
+  },
+  analysisSectionTitle: {
+    color: "#8B5CF6",
+    fontSize: SCREEN_W * 0.03,
+    fontWeight: "700",
+    marginBottom: SCREEN_H * 0.01,
+  },
+  lineIssueItem: {
+    flexDirection: "row",
+    marginBottom: SCREEN_H * 0.008,
+    gap: SCREEN_W * 0.02,
+  },
+  lineNumber: {
+    color: "#F59E0B",
+    fontSize: SCREEN_W * 0.028,
+    fontWeight: "700",
+    fontFamily: "monospace",
+  },
+  issueText: {
+    color: "#E5E7EB",
+    fontSize: SCREEN_W * 0.028,
+    lineHeight: SCREEN_W * 0.042,
+    flex: 1,
+  },
+  instructionsContent: {
+    color: "#FCD34D",
+    fontSize: SCREEN_W * 0.028,
+    lineHeight: SCREEN_W * 0.042,
+    fontStyle: "italic",
+    backgroundColor: "rgba(245, 158, 11, 0.1)",
+    padding: SCREEN_W * 0.025,
+    borderRadius: SCREEN_W * 0.015,
+    borderLeftWidth: 3,
+    borderLeftColor: "#F59E0B",
   },
   codeBlock: {
     backgroundColor: "rgba(0, 0, 0, 0.5)",
