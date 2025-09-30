@@ -1,7 +1,23 @@
+import { Platform } from 'react-native';
 import { db } from './firebase';
-import { doc, getDoc, updateDoc, serverTimestamp, collection, query, where, limit, getDocs } from 'firebase/firestore';
-import { GameStorage } from '../components/GameStorage';
+import { GameStorage } from './GameStorage';
 import type { User } from 'firebase/auth';
+
+// Import Firestore functions only for non-web platforms
+let doc: any, getDoc: any, updateDoc: any, serverTimestamp: any, collection: any, query: any, where: any, limit: any, getDocs: any;
+
+if (Platform.OS !== 'web') {
+  const firestore = require('firebase/firestore');
+  doc = firestore.doc;
+  getDoc = firestore.getDoc;
+  updateDoc = firestore.updateDoc;
+  serverTimestamp = firestore.serverTimestamp;
+  collection = firestore.collection;
+  query = firestore.query;
+  where = firestore.where;
+  limit = firestore.limit;
+  getDocs = firestore.getDocs;
+}
 
 export interface UserProfile {
   displayName: string;

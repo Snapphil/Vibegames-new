@@ -47,7 +47,7 @@ import { LinearGradient } from "expo-linear-gradient";
 import { BlurView } from "expo-blur";
 
 import SimpleGameService from "../services/SimpleGameService";
-import { getGameErrorMonitoringScript, getWebViewConfig, getPerformanceMonitoringScript } from "./WebViewUtils";
+import { getGameErrorMonitoringScript, getWebViewConfig, getPerformanceMonitoringScript } from "../services/WebViewUtils";
 import { SessionService } from "../services/SessionService";
 import ActivityTrackerInstance from "../services/ActivityTracker";
 import { useAuth } from "../auth/AuthProvider";

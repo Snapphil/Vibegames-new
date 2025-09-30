@@ -21,7 +21,7 @@ import { WebView } from "react-native-webview";
 import { SafeAreaView, useSafeAreaInsets } from "react-native-safe-area-context";
 import { BlurView } from "expo-blur";
 import { LinearGradient } from "expo-linear-gradient";
-import { GameStorage } from "./GameStorage";
+import { GameStorage } from "../services/GameStorage";
 import SimpleGameService from "../services/SimpleGameService";
 import AppConfigService from "../services/AppConfigService";
 import { useAuth } from "../auth/AuthProvider";

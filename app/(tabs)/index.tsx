@@ -1,10 +1,18 @@
-// app/(tabs)/index.tsx
+// app/(tabs)/index.tsx - Redirect to discover tab
+import { Redirect } from "expo-router";
+
+export default function IndexRedirect() {
+  return <Redirect href="/(tabs)/discover" />;
+}
+
+// Legacy Calculator component (kept for reference, not used)
+/*
 import React, { useState } from "react";
 import { SafeAreaView, View, Text, Pressable, StyleSheet } from "react-native";
 
 type Operator = "÷" | "×" | "−" | "+" | null;
 
-export default function Calculator() {
+function Calculator() {
   const [display, setDisplay] = useState("0");
   const [firstOperand, setFirstOperand] = useState<number | null>(null);
   const [op, setOp] = useState<Operator>(null);
@@ -238,3 +246,4 @@ const styles = StyleSheet.create({
     color: "#0B0F14",
   },
 });
+*/

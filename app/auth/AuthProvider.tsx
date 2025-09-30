@@ -1,13 +1,34 @@
 import React, { createContext, useContext, useEffect, useMemo, useState } from 'react';
-import { createUserWithEmailAndPassword, signInWithEmailAndPassword, onAuthStateChanged, signOut, User, sendPasswordResetEmail } from 'firebase/auth';
+import { Platform } from 'react-native';
 import { auth } from '../services/firebase';
 import { ensureUserDocument } from '../services/userRegistry';
 import { UserService } from '../services/UserService';
 import { SessionService } from '../services/SessionService';
-import { Platform } from 'react-native';
+
+// Import Firebase auth functions based on platform
+let createUserWithEmailAndPassword: any;
+let signInWithEmailAndPassword: any;
+let onAuthStateChanged: any;
+let signOut: any;
+let sendPasswordResetEmail: any;
+let User: any;
+
+if (Platform.OS === 'web') {
+  // Compat mode doesn't export these as separate functions - they're methods on auth
+  // We'll use them directly from the auth object
+} else {
+  // Modular SDK for native
+  const firebaseAuth = require('firebase/auth');
+  createUserWithEmailAndPassword = firebaseAuth.createUserWithEmailAndPassword;
+  signInWithEmailAndPassword = firebaseAuth.signInWithEmailAndPassword;
+  onAuthStateChanged = firebaseAuth.onAuthStateChanged;
+  signOut = firebaseAuth.signOut;
+  sendPasswordResetEmail = firebaseAuth.sendPasswordResetEmail;
+  User = firebaseAuth.User;
+}
 
 type AuthContextValue = {
-  user: User | null;
+  user: any | null;
   initializing: boolean;
   signInWithEmail: (email: string, password: string) => Promise<void>;
   signUpWithEmail: (email: string, password: string) => Promise<void>;
@@ -24,14 +45,15 @@ export function AuthProvider({
 }: {
   children: React.ReactNode;
 }) {
-  const [user, setUser] = useState<User | null>(null);
+  const [user, setUser] = useState<any | null>(null);
   const [initializing, setInitializing] = useState(true);
   const [authError, setAuthError] = useState<string | null>(null);
 
   // Initialize Firebase Auth state listener
 
   useEffect(() => {
-    const unsub = onAuthStateChanged(auth, async (u) => {
+    // Handle both compat (web) and modular (native) APIs
+    const handleAuthStateChange = async (u: any) => {
       setUser(u);
       
       if (u) {
@@ -60,7 +82,17 @@ export function AuthProvider({
       }
       
       if (initializing) setInitializing(false);
-    });
+    };
+    
+    let unsub: any;
+    if (Platform.OS === 'web') {
+      // Compat API: auth.onAuthStateChanged is a method
+      unsub = auth.onAuthStateChanged(handleAuthStateChange);
+    } else {
+      // Modular API: onAuthStateChanged is a function
+      unsub = onAuthStateChanged(auth, handleAuthStateChange);
+    }
+    
     return unsub;
   }, [initializing]);
 
@@ -77,7 +109,14 @@ export function AuthProvider({
         platform: Platform.OS,
       });
 
-      const firebaseResult = await signInWithEmailAndPassword(auth, email, password);
+      let firebaseResult: any;
+      if (Platform.OS === 'web') {
+        // Compat API: method on auth object
+        firebaseResult = await auth.signInWithEmailAndPassword(email, password);
+      } else {
+        // Modular API: standalone function
+        firebaseResult = await signInWithEmailAndPassword(auth, email, password);
+      }
       
       console.log('🔥 Firebase email sign-in successful:', {
         uid: firebaseResult.user.uid,
@@ -140,7 +179,14 @@ export function AuthProvider({
         platform: Platform.OS,
       });
 
-      const firebaseResult = await createUserWithEmailAndPassword(auth, email, password);
+      let firebaseResult: any;
+      if (Platform.OS === 'web') {
+        // Compat API: method on auth object
+        firebaseResult = await auth.createUserWithEmailAndPassword(email, password);
+      } else {
+        // Modular API: standalone function
+        firebaseResult = await createUserWithEmailAndPassword(auth, email, password);
+      }
       
       console.log('🔥 Firebase email sign-up successful:', {
         uid: firebaseResult.user.uid,
@@ -192,7 +238,13 @@ export function AuthProvider({
         throw new Error('Please enter your email address');
       }
 
-      await sendPasswordResetEmail(auth, email);
+      if (Platform.OS === 'web') {
+        // Compat API: method on auth object
+        await auth.sendPasswordResetEmail(email);
+      } else {
+        // Modular API: standalone function
+        await sendPasswordResetEmail(auth, email);
+      }
       console.log('📧 Password reset email sent to:', email);
       
     } catch (error) {
@@ -225,15 +277,24 @@ export function AuthProvider({
           const userService = UserService.getInstance();
           const username = user.email?.split('@')[0]?.replace(/[^a-zA-Z0-9]/g, '').toLowerCase() || user.uid.slice(0, 10);
           
-          // Import necessary Firebase functions
-          const { doc, updateDoc, serverTimestamp } = await import('firebase/firestore');
           const { db } = await import('../services/firebase');
           
-          const userRef = doc(db, 'users', username);
-          await updateDoc(userRef, {
-            lastLogoutAt: serverTimestamp(),
-            updatedAt: serverTimestamp()
-          });
+          if (Platform.OS === 'web') {
+            // Compat API
+            const userRef = db.collection('users').doc(username);
+            await userRef.update({
+              lastLogoutAt: (window as any).firebase?.firestore?.FieldValue?.serverTimestamp() || new Date(),
+              updatedAt: (window as any).firebase?.firestore?.FieldValue?.serverTimestamp() || new Date()
+            });
+          } else {
+            // Modular API
+            const { doc, updateDoc, serverTimestamp } = await import('firebase/firestore');
+            const userRef = doc(db, 'users', username);
+            await updateDoc(userRef, {
+              lastLogoutAt: serverTimestamp(),
+              updatedAt: serverTimestamp()
+            });
+          }
           console.log('📝 Updated user logout timestamp in Firebase');
         } catch (updateError) {
           console.error('⚠️ Failed to update logout timestamp:', updateError);
@@ -241,7 +302,13 @@ export function AuthProvider({
         }
       }
 
-      await signOut(auth);
+      if (Platform.OS === 'web') {
+        // Compat API: method on auth object
+        await auth.signOut();
+      } else {
+        // Modular API: standalone function
+        await signOut(auth);
+      }
       setAuthError(null);
       console.log('👋 User signed out successfully');
     } catch (error) {

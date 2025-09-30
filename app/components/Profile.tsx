@@ -17,11 +17,11 @@ import { CustomIcon } from "../../components/ui/CustomIcon";
 import { SafeAreaView } from "react-native-safe-area-context";
 
 import { WebView } from "react-native-webview";
-import { GameStorage } from "./GameStorage";
-import type { StoredGame } from "./GameStorage";
+import { GameStorage } from "../services/GameStorage";
+import type { StoredGame } from "../services/GameStorage";
 import { UserService, LocalUserProfile } from "../services/UserService";
 import SimpleGameService from "../services/SimpleGameService";
-import { getGameErrorMonitoringScript } from "./WebViewUtils";
+import { getGameErrorMonitoringScript } from "../services/WebViewUtils";
 import type { SimpleGame } from "../services/SimpleGameService";
 import { useAuth } from "../auth/AuthProvider";
 

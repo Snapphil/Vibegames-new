@@ -2,12 +2,13 @@ import React, { useEffect } from "react";
 import { Stack } from "expo-router";
 import { StatusBar } from "expo-status-bar";
 import { GestureHandlerRootView } from "react-native-gesture-handler";
-import { View, Platform, AppState } from "react-native";
+import { View, Platform, AppState, ActivityIndicator, Text } from "react-native";
 import GenerationProvider from "./components/components/GenerationState";
 import GenerationOverlay from "./components/components/GenerationOverlay";
 import { useKeepAwake } from "expo-keep-awake";
 import { SafeAreaProvider } from "react-native-safe-area-context";
-import { AuthProvider } from "./auth/AuthProvider";
+import { AuthProvider, useAuth } from "./auth/AuthProvider";
+import SignInScreen from "./auth/SignInScreen";
 import ErrorBoundary from "./components/ErrorBoundary";
 import SimpleGameService from "./services/SimpleGameService";
 import * as ScreenOrientation from 'expo-screen-orientation';
@@ -55,6 +56,35 @@ function AppLifecycleManager() {
   return null;
 }
 
+// Main app content with auth check
+function AppContent() {
+  const { user, initializing } = useAuth();
+
+  if (initializing) {
+    return (
+      <View style={{ flex: 1, backgroundColor: "#000", justifyContent: "center", alignItems: "center" }}>
+        <ActivityIndicator color="#FF3040" size="large" />
+        <Text style={{ color: "#FFFFFF", marginTop: 16, fontSize: 16, fontWeight: "500" }}>
+          Initializing...
+        </Text>
+      </View>
+    );
+  }
+
+  if (!user) {
+    return <SignInScreen />;
+  }
+
+  return (
+    <GenerationProvider>
+      <View style={{ flex: 1, backgroundColor: "#000" }}>
+        <Stack screenOptions={{ headerShown: false, animation: "fade" }} />
+        <GenerationOverlay />
+      </View>
+    </GenerationProvider>
+  );
+}
+
 export default function RootLayout() {
   
   return (
@@ -65,12 +95,7 @@ export default function RootLayout() {
           <KeepAwakeWrapper />
           <AppLifecycleManager />
           <ErrorBoundary>
-            <GenerationProvider>
-              <View style={{ flex: 1, backgroundColor: "#000" }}>
-                <Stack screenOptions={{ headerShown: false, animation: "fade" }} />
-                <GenerationOverlay />
-              </View>
-            </GenerationProvider>
+            <AppContent />
           </ErrorBoundary>
         </SafeAreaProvider>
       </GestureHandlerRootView>
