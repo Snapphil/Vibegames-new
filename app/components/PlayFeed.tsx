@@ -38,7 +38,7 @@ import { KeyboardAvoidingView } from "react-native/Libraries/Components/Keyboard
 import { Easing } from "react-native/Libraries/Animated/Easing";
 import { AccessibilityInfo } from "react-native/Libraries/Components/AccessibilityInfo/AccessibilityInfo";
 import { Keyboard } from "react-native/Libraries/Components/Keyboard/Keyboard";
-import { PanResponder } from "react-native/Libraries/Interaction/PanResponder";
+import PanResponder from "react-native/Libraries/Interaction/PanResponder";
 import * as Haptics from "expo-haptics";
 import { WebView } from "react-native-webview";
 import { CustomIcon } from "../../components/ui/CustomIcon";
@@ -1072,7 +1072,7 @@ function CommentModal({
   };
 
   // Pan gesture responder for dragging
-  const panResponder = PanResponder.create({
+  const panResponder = (PanResponder as any).create({
     onStartShouldSetPanResponder: (evt, gestureState) => {
       // Allow gestures on the entire header area and drag indicator
       return true;

@@ -17,7 +17,7 @@ import {
 import { KeyboardAvoidingView } from "react-native/Libraries/Components/Keyboard/KeyboardAvoidingView";
 import { Keyboard } from "react-native/Libraries/Components/Keyboard/Keyboard";
 import { Easing } from "react-native/Libraries/Animated/Easing";
-import { PanResponder } from "react-native/Libraries/Interaction/PanResponder";
+import PanResponder from "react-native/Libraries/Interaction/PanResponder";
 import { CustomIcon } from "../../components/ui/CustomIcon";
 import { WebView } from "react-native-webview";
 import { SafeAreaView, useSafeAreaInsets } from "react-native-safe-area-context";
@@ -274,7 +274,7 @@ export default function GameCreator({ onGamePublished }: GameCreatorProps = {}) 
 
   // Single pan responder for the entire draggable header area
   const overlayPanResponder = useRef(
-    PanResponder.create({
+    (PanResponder as any).create({
       onStartShouldSetPanResponder: () => true,
       onStartShouldSetPanResponderCapture: () => false,
       onMoveShouldSetPanResponder: (_, gestureState) => {
