@@ -31,14 +31,14 @@ import {
   ScrollView,
   ActivityIndicator,
   Animated,
-  KeyboardAvoidingView,
   Platform,
   useWindowDimensions,
-  Easing,
-  AccessibilityInfo,
-  Keyboard,
-  PanResponder,
 } from "react-native";
+import { KeyboardAvoidingView } from "react-native/Libraries/Components/Keyboard/KeyboardAvoidingView";
+import { Easing } from "react-native/Libraries/Animated/Easing";
+import { AccessibilityInfo } from "react-native/Libraries/Components/AccessibilityInfo/AccessibilityInfo";
+import { Keyboard } from "react-native/Libraries/Components/Keyboard/Keyboard";
+import { PanResponder } from "react-native/Libraries/Interaction/PanResponder";
 import * as Haptics from "expo-haptics";
 import { WebView } from "react-native-webview";
 import { CustomIcon } from "../../components/ui/CustomIcon";
@@ -98,7 +98,7 @@ const PlayFeed = forwardRef<PlayFeedRef, {}>(({}, ref) => {
   const [currentPage, setCurrentPage] = useState(0);
   const [showBounceLoader, setShowBounceLoader] = useState(false);
   const [initialLoadComplete, setInitialLoadComplete] = useState(false);
-  const viewRef = useRef<FlatList>(null);
+  const viewRef = useRef<any>(null);
   const prevIndexRef = useRef(0);
   const gamesRef = useRef<Game[]>([]);
   const hasMoreGamesRef = useRef(true);
@@ -111,7 +111,7 @@ const PlayFeed = forwardRef<PlayFeedRef, {}>(({}, ref) => {
   const fadeAnim = useRef(new Animated.Value(0)).current;
   const slideAnim = useRef(new Animated.Value(30)).current;
   const bounceAnim = useRef(new Animated.Value(0)).current;
-  const bounceAnimationRef = useRef<Animated.CompositeAnimation | null>(null);
+  const bounceAnimationRef = useRef<any>(null);
 
   useEffect(() => {
     // Load only the first game initially for faster startup

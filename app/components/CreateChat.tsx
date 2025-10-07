@@ -5,19 +5,19 @@ import {
   TextInput,
   Pressable,
   StyleSheet,
-  KeyboardAvoidingView,
   Platform,
   Dimensions,
   ActivityIndicator,
   Modal,
   Animated,
   ScrollView,
-  Keyboard,
   Alert,
-  Easing,
-  PanResponder,
   TouchableWithoutFeedback,
 } from "react-native";
+import { KeyboardAvoidingView } from "react-native/Libraries/Components/Keyboard/KeyboardAvoidingView";
+import { Keyboard } from "react-native/Libraries/Components/Keyboard/Keyboard";
+import { Easing } from "react-native/Libraries/Animated/Easing";
+import { PanResponder } from "react-native/Libraries/Interaction/PanResponder";
 import { CustomIcon } from "../../components/ui/CustomIcon";
 import { WebView } from "react-native-webview";
 import { SafeAreaView, useSafeAreaInsets } from "react-native-safe-area-context";
@@ -119,6 +119,7 @@ interface ProblemFinderProblem {
   old_code?: string;
   new_code?: string;
   priority: 'high' | 'medium' | 'low';
+
 }
 
 interface ProblemFinderOutput {
@@ -269,7 +270,7 @@ export default function GameCreator({ onGamePublished }: GameCreatorProps = {}) 
   const squareRotation = useRef(new Animated.Value(0)).current;
 
   // Refs
-  const scrollViewRef = useRef<ScrollView>(null);
+  const scrollViewRef = useRef<any>(null);
 
   // Single pan responder for the entire draggable header area
   const overlayPanResponder = useRef(
@@ -780,7 +781,7 @@ export default function GameCreator({ onGamePublished }: GameCreatorProps = {}) 
 
     const buttonIds = html.match(/id\s*=\s*["'](restart|start|pause|menu)["']/gi) || [];
     buttonIds.forEach(match => {
-      const id = match.match(/["']([^"']+)["']/)?.[1];
+      const id = (match as string).match(/["']([^"']+)["']/)?.[1];
       if (id && !new RegExp(`getElementById\\(\\s*['"]${id}['"]\\s*\\)\\.addEventListener`).test(html)) {
         addIssue('button_no_handler',
           `Button #${id} lacks event listener.`,
