@@ -14,22 +14,33 @@ import ActivityTrackerInstance from "./services/ActivityTracker";
 import { AuthProvider, useAuth } from "./auth/AuthProvider";
 import SignInScreen from "./auth/SignInScreen";
 
+// Onboarding imports
+import OnboardingOverlay from "./components/OnboardingOverlayNew";
+import { useOnboarding, useOnboardingTarget } from "./hooks/useOnboarding";
+import { onboardingSteps } from "./config/onboardingConfig";
+import OnboardingServiceInstance from "./services/OnboardingService";
+
 // Animated Tab Button Component
 function AnimatedTabButton({ 
   isActive, 
   icon, 
   activeIcon, 
   onPress, 
-  label 
+  label,
+  refId,
+  onLayout,
 }: {
   isActive: boolean;
   icon: string;
   activeIcon: string;
   onPress: () => void;
   label: string;
+  refId?: string;
+  onLayout?: (event: any) => void;
 }) {
   const scaleAnim = useRef(new Animated.Value(1)).current;
   const glowAnim = useRef(new Animated.Value(0)).current;
+  const buttonRef = useRef<any>(null);
 
   React.useEffect(() => {
     Animated.parallel([
@@ -71,9 +82,30 @@ function AnimatedTabButton({
     onPress();
   };
 
+  const handleLayout = (event: any) => {
+    if (onLayout && refId) {
+      // Measure button position in window
+      if (buttonRef.current) {
+        buttonRef.current.measure((x, y, width, height, pageX, pageY) => {
+          onLayout({
+            nativeEvent: {
+              layout: { x: pageX, y: pageY, width, height }
+            },
+            target: buttonRef.current
+          });
+        });
+      }
+    }
+  };
+
   return (
-    <Pressable style={styles.tabButton} onPress={handlePress}>
+    <Pressable 
+      style={styles.tabButton} 
+      onPress={handlePress}
+      onLayout={handleLayout}
+    >
       <Animated.View 
+        ref={buttonRef}
         style={[
           styles.tabIconContainer,
           {
@@ -123,6 +155,33 @@ function AppContent() {
   
   const insets = useSafeAreaInsets();
   const { user, initializing, authError } = useAuth();
+
+  // Onboarding state
+  const {
+    showOnboarding,
+    isReady,
+    targetRefs,
+    registerTarget,
+    completeOnboarding,
+    skipOnboarding,
+  } = useOnboarding();
+
+  // Create onLayout handlers for each tab button
+  const playTabLayout = useOnboardingTarget('tab-play', registerTarget);
+  const createTabLayout = useOnboardingTarget('tab-create', registerTarget);
+  const profileTabLayout = useOnboardingTarget('tab-profile', registerTarget);
+
+  // TEMPORARY: Reset button for testing
+  const [showResetButton, setShowResetButton] = React.useState(true);
+  const handleResetOnboarding = async () => {
+    console.log('🔄 MANUAL RESET: Resetting onboarding...');
+    await OnboardingServiceInstance.resetOnboarding();
+    setShowResetButton(false);
+    setTimeout(() => {
+      console.log('🔄 Please reload the app to see the tutorial!');
+      alert('Onboarding reset! Close and reopen the app to see the tutorial.');
+    }, 500);
+  };
 
   // Start/stop activity tracking based on user authentication
   React.useEffect(() => {
@@ -207,6 +266,8 @@ function AppContent() {
             activeIcon="flash"
             onPress={() => setActiveTab("play")}
             label="Play"
+            refId="tab-play"
+            onLayout={playTabLayout.onLayout}
           />
           
           <AnimatedTabButton
@@ -215,6 +276,8 @@ function AppContent() {
             activeIcon="add-circle"
             onPress={() => setActiveTab("create")}
             label="Create"
+            refId="tab-create"
+            onLayout={createTabLayout.onLayout}
           />
           
           <AnimatedTabButton
@@ -223,9 +286,48 @@ function AppContent() {
             activeIcon="person"
             onPress={() => setActiveTab("profile")}
             label="Profile"
+            refId="tab-profile"
+            onLayout={profileTabLayout.onLayout}
           />
         </View>
       </View>
+
+      {/* Onboarding Overlay */}
+      {isReady && (
+        <OnboardingOverlay
+          visible={showOnboarding}
+          steps={onboardingSteps}
+          onComplete={completeOnboarding}
+          onSkip={skipOnboarding}
+          targetRefs={targetRefs}
+        />
+      )}
+
+      {/* TEMPORARY: Floating reset button for testing */}
+      {showResetButton && (
+        <Pressable
+          onPress={handleResetOnboarding}
+          style={{
+            position: 'absolute',
+            bottom: 100,
+            right: 20,
+            backgroundColor: '#FF3040',
+            paddingHorizontal: 16,
+            paddingVertical: 12,
+            borderRadius: 25,
+            shadowColor: '#000',
+            shadowOffset: { width: 0, height: 4 },
+            shadowOpacity: 0.3,
+            shadowRadius: 8,
+            elevation: 8,
+            zIndex: 9999,
+          }}
+        >
+          <Text style={{ color: '#FFFFFF', fontWeight: '700', fontSize: 14 }}>
+            🔄 Reset Tutorial
+          </Text>
+        </Pressable>
+      )}
 
 
 
