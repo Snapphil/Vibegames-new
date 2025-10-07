@@ -15,7 +15,7 @@ import {
 } from "react-native";
 import { CustomIcon } from "../../components/ui/CustomIcon";
 import { SafeAreaView } from "react-native-safe-area-context";
-
+import { Ionicons } from "@expo/vector-icons";
 import { WebView } from "react-native-webview";
 import { GameStorage } from "./GameStorage";
 import type { StoredGame } from "./GameStorage";
@@ -24,6 +24,7 @@ import SimpleGameService from "../services/SimpleGameService";
 import { getGameErrorMonitoringScript } from "./WebViewUtils";
 import type { SimpleGame } from "../services/SimpleGameService";
 import { useAuth } from "../auth/AuthProvider";
+import OnboardingDebug from "./OnboardingDebug";
 
 type ProfileTab = "created" | "liked";
 
@@ -428,6 +429,13 @@ const Profile = React.forwardRef<{ refresh: () => void }, {
             )
           )}
         </View>
+
+        {/* Onboarding Debug Panel (only visible in development) */}
+        {__DEV__ && (
+          <View style={{ padding: 16 }}>
+            <OnboardingDebug />
+          </View>
+        )}
       </ScrollView>
 
       {/* Game Preview Modal */}
