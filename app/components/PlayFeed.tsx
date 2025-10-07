@@ -79,8 +79,9 @@ const PlayFeed = forwardRef<PlayFeedRef, {}>(({}, ref) => {
   const cardHeight = screenHeight - insets.top - insets.bottom - tabBarHeight;
   const cardWidth = screenWidth;
 
-  // Pagination configuration - these can be easily changed
-  const PAGE_SIZE = 3; // Number of games to load per page
+  // Pagination configuration - optimized for faster initial load
+  const INITIAL_LOAD_SIZE = 1; // Load only 1 game initially for faster startup
+  const SUBSEQUENT_PAGE_SIZE = 3; // Load 3 games for subsequent batches
   const LOAD_TRIGGER_INDEX = 2; // Load more when user reaches this index (0-based, so 2 = 3rd game)
 
   const [games, setGames] = useState<Game[]>([]);
@@ -96,6 +97,7 @@ const PlayFeed = forwardRef<PlayFeedRef, {}>(({}, ref) => {
   const [hasMoreGames, setHasMoreGames] = useState(true);
   const [currentPage, setCurrentPage] = useState(0);
   const [showBounceLoader, setShowBounceLoader] = useState(false);
+  const [initialLoadComplete, setInitialLoadComplete] = useState(false);
   const viewRef = useRef<FlatList>(null);
   const prevIndexRef = useRef(0);
   const gamesRef = useRef<Game[]>([]);
@@ -112,8 +114,9 @@ const PlayFeed = forwardRef<PlayFeedRef, {}>(({}, ref) => {
   const bounceAnimationRef = useRef<Animated.CompositeAnimation | null>(null);
 
   useEffect(() => {
-    loadGamesFromFirebase();
-    
+    // Load only the first game initially for faster startup
+    loadGamesFromFirebase(0, false, INITIAL_LOAD_SIZE);
+
     // Smooth entrance animation
     Animated.parallel([
       Animated.timing(fadeAnim, {
@@ -174,7 +177,19 @@ const PlayFeed = forwardRef<PlayFeedRef, {}>(({}, ref) => {
     };
   }, [showBounceLoader, bounceAnim]);
 
-  const loadGamesFromFirebase = useCallback(async (page: number = 0, append: boolean = false) => {
+  // Load additional games after initial load is complete (3-4 seconds delay or when first game loads)
+  useEffect(() => {
+    if (initialLoadComplete && games.length === 1) {
+      // Wait 3-4 seconds or until user interaction, then load 2 more games
+      const timeoutId = setTimeout(() => {
+        loadGamesFromFirebase(0, true, SUBSEQUENT_PAGE_SIZE - INITIAL_LOAD_SIZE);
+      }, 3500); // 3.5 seconds delay
+
+      return () => clearTimeout(timeoutId);
+    }
+  }, [initialLoadComplete, games.length, SUBSEQUENT_PAGE_SIZE, INITIAL_LOAD_SIZE]);
+
+  const loadGamesFromFirebase = useCallback(async (page: number = 0, append: boolean = false, customLimit?: number) => {
     try {
       if (page === 0) {
         setLoading(true);
@@ -200,19 +215,27 @@ const PlayFeed = forwardRef<PlayFeedRef, {}>(({}, ref) => {
             liked: game.liked || false
           }));
 
-        // Calculate pagination
-        const startIndex = page * PAGE_SIZE;
-        const endIndex = startIndex + PAGE_SIZE;
+        // Calculate pagination - use customLimit for initial load, PAGE_SIZE for subsequent loads
+        const pageSize = customLimit || (page === 0 ? INITIAL_LOAD_SIZE : SUBSEQUENT_PAGE_SIZE);
+        const startIndex = page * SUBSEQUENT_PAGE_SIZE;
+        const endIndex = startIndex + pageSize;
         const paginatedGames = firebaseGames.slice(startIndex, endIndex);
 
         if (append) {
           setGames(prevGames => [...prevGames, ...paginatedGames]);
         } else {
           setGames(paginatedGames);
+          // Mark initial load as complete when first game loads
+          if (pageSize === INITIAL_LOAD_SIZE) {
+            setInitialLoadComplete(true);
+          }
         }
 
         // Check if there are more games available
-        setHasMoreGames(endIndex < firebaseGames.length);
+        // For initial load, we want to ensure there are more games to load later
+        const totalAvailable = firebaseGames.length;
+        const currentLoaded = append ? games.length + paginatedGames.length : paginatedGames.length;
+        setHasMoreGames(currentLoaded < totalAvailable);
         setCurrentPage(page);
       } else {
         if (!append) {
@@ -230,13 +253,13 @@ const PlayFeed = forwardRef<PlayFeedRef, {}>(({}, ref) => {
       setLoading(false);
       setLoadingMore(false);
     }
-  }, [user, gameService]);
+  }, [user, gameService, INITIAL_LOAD_SIZE, SUBSEQUENT_PAGE_SIZE, games.length]);
 
   const loadMoreGames = useCallback(async () => {
     if (loadingMore || !hasMoreGames) return;
 
     const nextPage = currentPage + 1;
-    await loadGamesFromFirebase(nextPage, true);
+    await loadGamesFromFirebase(nextPage, true, SUBSEQUENT_PAGE_SIZE);
   }, [loadingMore, hasMoreGames, currentPage, loadGamesFromFirebase]);
 
   useImperativeHandle(ref, () => ({
@@ -244,7 +267,8 @@ const PlayFeed = forwardRef<PlayFeedRef, {}>(({}, ref) => {
       // Reset pagination and reload from start
       setCurrentPage(0);
       setHasMoreGames(true);
-      loadGamesFromFirebase(0, false).then(() => {
+      setInitialLoadComplete(false);
+      loadGamesFromFirebase(0, false, INITIAL_LOAD_SIZE).then(() => {
         requestAnimationFrame(() => {
           setGames(prevGames => {
             const index = prevGames.findIndex(g => g.id === game.id);
@@ -260,7 +284,8 @@ const PlayFeed = forwardRef<PlayFeedRef, {}>(({}, ref) => {
     refreshFeed: () => {
       setCurrentPage(0);
       setHasMoreGames(true);
-      loadGamesFromFirebase(0, false);
+      setInitialLoadComplete(false);
+      loadGamesFromFirebase(0, false, INITIAL_LOAD_SIZE);
     },
   }), []);
 

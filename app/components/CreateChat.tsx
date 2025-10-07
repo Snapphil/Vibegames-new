@@ -111,8 +111,6 @@ interface RoundStatus {
   isUserQuery?: boolean;
   isProblemFinder?: boolean;
   problems?: ProblemFinderProblem[];
-  isEditAnalyzer?: boolean;
-  editAnalysis?: EditModeProblemAnalyzerOutput;
 }
 
 interface ProblemFinderProblem {
@@ -129,6 +127,7 @@ interface ProblemFinderOutput {
   reasoning?: string;
 }
 
+/*
 interface EditModeProblemAnalyzerOutput {
   user_intent: string;
   issues_found: Array<{
@@ -137,6 +136,7 @@ interface EditModeProblemAnalyzerOutput {
   }>;
   instructions_for_patch_developer: string;
 }
+*/
 
 interface GameCreatorProps {
   onGamePublished?: (game: any) => void;
@@ -1232,6 +1232,7 @@ Respond with ONLY the JSON object as specified in the system prompt.`;
   };
 
   // Edit Mode Problem Analyzer
+  /*
   const buildEditModeProblemAnalyzerPrompt = (): string => {
     return `You are an Edit Mode Problem Analyzer. Analyze user requests and identify exact code issues with line numbers.
 
@@ -1259,7 +1260,9 @@ RULES:
 - Be specific and concise
 - Max 3 issues`;
   };
+  */
 
+  /*
   const callEditModeProblemAnalyzer = async (
     userRequest: string,
     numberedHtmlCode: string
@@ -1280,7 +1283,7 @@ RULES:
     }
 
     const systemPrompt = buildEditModeProblemAnalyzerPrompt();
-    
+
     const userPrompt = `USER REQUEST:
 ${userRequest}
 
@@ -1324,7 +1327,7 @@ Identify the exact line numbers with issues and provide your analysis in JSON fo
 
     const data = await response.json();
     const content = data.choices?.[0]?.message?.content || "{}";
-    
+
     let parsedOutput: EditModeProblemAnalyzerOutput;
     try {
       parsedOutput = JSON.parse(content);
@@ -1342,6 +1345,7 @@ Identify the exact line numbers with issues and provide your analysis in JSON fo
       usage: data.usage
     };
   };
+  */
 
   // Controller loop with Problem Finder integration
   const controllerLoop = async (userTopic: string, maxRounds = 5): Promise<string> => {
@@ -1796,37 +1800,7 @@ Output one complete HTML file. After the HTML, request checks with [[DO:LINT]] a
         isUserQuery: true
       }]);
 
-      // Step 1: Run Edit Mode Problem Analyzer with numbered HTML
-      setEditRoundHistory(prev => [...prev, {
-        round: prev.length + 1,
-        message: "Edit Mode Problem Analyzer: Analyzing request...",
-        description: "Identifying exact issues with line numbers",
-        timestamp: Date.now(),
-        status: "Analyzing code structure"
-      }]);
-
-      console.log('\n=== EDIT MODE PROBLEM ANALYZER ===');
-      const numberedHtml = addLineNumbers(gameHtml);
-      const { output: analyzerOutput, usage: analyzerUsage } = await callEditModeProblemAnalyzer(
-        editQuery,
-        numberedHtml
-      );
-
-      console.log('Edit Mode Problem Analyzer Output:', JSON.stringify(analyzerOutput, null, 2));
-
-      // Add analyzer results to edit history
-      setEditRoundHistory(prev => [...prev, {
-        round: prev.length + 1,
-        message: `Analysis Complete: ${analyzerOutput.user_intent}`,
-        description: `Found ${analyzerOutput.issues_found.length} issue(s)`,
-        timestamp: Date.now(),
-        status: analyzerOutput.instructions_for_patch_developer,
-        tokens: analyzerUsage?.total_tokens || 0,
-        isEditAnalyzer: true,
-        editAnalysis: analyzerOutput
-      }]);
-
-      // Step 2: Generate edited HTML directly
+      // Generate edited HTML directly with user's request
       let currentHtml = gameHtml;
       let attempt = 1;
       const maxAttempts = 2;
@@ -1841,30 +1815,23 @@ Output one complete HTML file. After the HTML, request checks with [[DO:LINT]] a
           status: attempt === 1 ? "Generating full HTML" : "Fixing remaining errors"
         }]);
 
-        // Prepare the prompt for HTML editor with line-specific issues
-        let issuesList = analyzerOutput.issues_found.map(issue =>
-          `Line ${issue.line_number}: ${issue.issue}`
-        ).join('\n');
-
-        let promptToSend = `${analyzerOutput.instructions_for_patch_developer}
-
-SPECIFIC ISSUES TO ADDRESS:
-${issuesList}`;
+        // Prepare the prompt for HTML editor with user's direct request
+        let promptToSend = editQuery;
 
         if (attempt > 1) {
           // For retry attempts, include linter errors
           const lintErrors = lintHtml(currentHtml);
           if (lintErrors.length > 0) {
             const errorReport = formatErrorsForPrompt(lintErrors);
-            promptToSend = `${analyzerOutput.instructions_for_patch_developer}
-
-SPECIFIC ISSUES TO ADDRESS:
-${issuesList}
+            promptToSend = `${editQuery}
 
 ALSO FIX THESE LINTER/SYNTAX ERRORS:
 ${errorReport}`;
           }
         }
+
+        console.log('\n=== DIRECT EDIT API REQUEST ===');
+        console.log('User Query:', editQuery);
 
         // Call edit API to generate full HTML
         const editedHtml = await callEditAPI(promptToSend, currentHtml);
@@ -2573,43 +2540,6 @@ ${errorReport}`;
                         <View style={styles.userQueryRow}>
                           <View style={[styles.userQueryBubble, styles.editQueryBubble]}>
                             <Text style={styles.userQueryText}>{status.message}</Text>
-                          </View>
-                        </View>
-                      ) : status.isEditAnalyzer ? (
-                        // Render Edit Mode Problem Analyzer with special styling
-                        <View style={styles.editAnalyzerRow}>
-                          <View style={styles.editAnalyzerContainer}>
-                            <View style={styles.editAnalyzerHeader}>
-                              <View style={styles.editAnalyzerIconContainer}>
-                                <CustomIcon name="bulb" size={SCREEN_W * 0.04} color="#FFFFFF" />
-                              </View>
-                              <Text style={styles.editAnalyzerTitle}>Edit Mode Problem Analyzer</Text>
-                              {status.tokens && typeof status.tokens === 'number' && status.tokens > 0 && (
-                                <Text style={styles.editAnalyzerTokens}>
-                                  {status.tokens.toLocaleString()} tokens
-                                </Text>
-                              )}
-                            </View>
-                            <Text style={styles.editAnalyzerMessage}>{status.message}</Text>
-                            {status.editAnalysis && (
-                              <>
-                                {status.editAnalysis.issues_found && status.editAnalysis.issues_found.length > 0 && (
-                                  <View style={styles.analysisSection}>
-                                    <Text style={styles.analysisSectionTitle}>🔍 Issues Found:</Text>
-                                    {status.editAnalysis.issues_found.map((issue, idx) => (
-                                      <View key={idx} style={styles.lineIssueItem}>
-                                        <Text style={styles.lineNumber}>Line {issue.line_number}:</Text>
-                                        <Text style={styles.issueText}>{issue.issue}</Text>
-                                      </View>
-                                    ))}
-                                  </View>
-                                )}
-                                <View style={styles.analysisSection}>
-                                  <Text style={styles.analysisSectionTitle}>📋 Instructions for Patch Developer:</Text>
-                                  <Text style={styles.instructionsContent}>{status.editAnalysis.instructions_for_patch_developer}</Text>
-                                </View>
-                              </>
-                            )}
                           </View>
                         </View>
                       ) : status.isProblemFinder ? (
